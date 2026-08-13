@@ -203,3 +203,35 @@ describe("pushcloud setup", () => {
     assert.match(err, /--token and --key/);
   });
 });
+
+describe("the skill", () => {
+  test("is installed alongside the hooks", async () => {
+    const w = workspace();
+    const skills = join(w.dir, "skills");
+    await run(good(w, ["--no-test", "--skills-dir", skills]));
+
+    const skill = readFileSync(join(skills, "pushcloud", "SKILL.md"), "utf8");
+    // The frontmatter is what makes it a skill rather than a stray markdown file:
+    // without a description the agent has nothing to match against.
+    assert.match(skill, /^---\n/);
+    assert.match(skill, /^name: pushcloud$/m);
+    assert.match(skill, /^description: .+/m);
+  });
+
+  test("remove takes it away again", async () => {
+    const w = workspace();
+    const skills = join(w.dir, "skills");
+    await run(good(w, ["--no-test", "--skills-dir", skills]));
+    await run(["remove", "--claude-settings", w.settings, "--skills-dir", skills]);
+    assert.equal(existsSync(join(skills, "pushcloud", "SKILL.md")), false);
+  });
+
+  test("a skills directory that cannot be written does not fail the setup", async () => {
+    // The hooks are the part that has to work. A skill that could not be copied
+    // is a worse outcome than no skill, only if it takes the install down with it.
+    const w = workspace();
+    const { code } = await run(good(w, ["--no-test", "--skills-dir", "/proc/nope/nowhere"]));
+    assert.equal(code, 0);
+    assert.ok(existsSync(w.settings));
+  });
+});

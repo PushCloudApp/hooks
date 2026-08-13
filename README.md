@@ -72,10 +72,20 @@ variable, which is what CI and a second account should use.
 | `PUSHCLOUD_WAIT_SECONDS` | `wait_seconds` | `120` |
 | `PUSHCLOUD_API` | `api` | `https://pushcloud.app` |
 | `PUSHCLOUD_CONFIG` | | `~/.pushcloud/config.json` |
+| `PUSHCLOUD_E2EE_KEY` | `e2ee_key` | none |
 
 If you change `wait_seconds`, the `timeout` on the `PreToolUse` hook in
 `settings.json` must stay larger than it, or Claude Code kills the hook while
 you are still looking at the question.
+
+## The skill
+
+Setup also writes a skill to `~/.claude/skills/pushcloud/`. The hooks make an agent able
+to reach you; the skill is what tells it *when* it should - stop and ask before something
+irreversible, say so when a long task finishes, and read a denial's reason rather than
+trying a variation of the thing you just refused.
+
+It is a plain markdown file. Read it, and edit it if you disagree with any of it.
 
 ## Which agents
 

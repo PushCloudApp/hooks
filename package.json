@@ -10,7 +10,9 @@
     "hooks",
     "push-notifications",
     "human-in-the-loop",
-    "ai-agents"
+    "ai-agents",
+    "skill",
+    "claude-code-skill"
   ],
   "homepage": "https://pushcloud.app",
   "repository": {
@@ -25,6 +27,7 @@
   },
   "files": [
     "src",
+    "skills",
     "README.md",
     "LICENSE"
   ],

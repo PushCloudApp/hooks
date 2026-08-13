@@ -12,7 +12,7 @@
 // week of silence. Step 4 is what proves the loop end to end, and it is the
 // only part of the setup a user will remember.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,7 @@ import { api, askQuestion, waitForAnswer } from "./api.mjs";
 import { parseKey } from "./seal.mjs";
 
 const HOOK = fileURLToPath(new URL("./pushcloud-hook.mjs", import.meta.url));
+const SKILL = fileURLToPath(new URL("../skills/pushcloud/SKILL.md", import.meta.url));
 
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const bold = (s) => (process.stdout.isTTY ? `[1m${s}[0m` : s);
@@ -196,6 +197,15 @@ async function runSetup(args) {
     say(`${target.agent.name}: hooks written to ${path}`);
   }
 
+  // The skill is the other half of this, and the half that decides whether the
+  // product is used well: the hook makes an agent *able* to reach you, and the
+  // skill tells it when it should. Claude Code only for now - it is the one with
+  // a skills directory.
+  if (targets.some((t) => t.agent.id === "claude")) {
+    const installed = installSkill(args["skills-dir"]);
+    if (installed) say(`Skill written to ${installed}`);
+  }
+
   for (const d of detected.filter((x) => x.present && !x.agent.approves)) {
     say();
     say(`Found ${d.agent.name}, and left it alone: ${d.agent.why}.`);
@@ -231,6 +241,25 @@ async function runSetup(args) {
   }
 }
 
+/// Copies the skill into the agent's skills directory.
+///
+/// Copied rather than symlinked: a symlink into a global npm package breaks the
+/// moment that package is updated or removed, and it would break silently - the
+/// agent would simply stop knowing when to ask.
+function installSkill(dir) {
+  const target = dir
+    ? resolve(dir, "pushcloud", "SKILL.md")
+    : join(homedir(), ".claude", "skills", "pushcloud", "SKILL.md");
+  try {
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(SKILL, target);
+    return target;
+  } catch {
+    // Not worth failing a setup over. The hooks are the part that has to work.
+    return null;
+  }
+}
+
 async function runRemove(args) {
   // Every agent, not just the ones detected: a config directory that has since
   // been deleted can still hold our hooks, and an uninstall that leaves some
@@ -242,6 +271,13 @@ async function runRemove(args) {
     if (!existsSync(path)) continue;
     writeSettings(path, d.agent.uninstall(readSettings(path)));
     say(`Removed the PushCloud hooks from ${path}`);
+  }
+  const skill = args["skills-dir"]
+    ? resolve(args["skills-dir"], "pushcloud", "SKILL.md")
+    : join(homedir(), ".claude", "skills", "pushcloud", "SKILL.md");
+  if (existsSync(skill)) {
+    rmSync(dirname(skill), { recursive: true, force: true });
+    say(`Removed the skill from ${dirname(skill)}`);
   }
   say(dim(`Credentials are left at ${DEFAULT_CONFIG_PATH}; delete that file to finish.`));
 }
@@ -272,6 +308,7 @@ try {
     say("  --agent ID               wire up just this one (claude, cursor, codex)");
     say("  --claude-settings PATH   settings file to write (default: ~/.claude/settings.json)");
     say("  --config PATH            where to keep credentials");
+    say("  --skills-dir PATH        where to write the skill (default: ~/.claude/skills)");
     say("  --e2ee-key HEX           encrypt commands before they leave the machine");
     say("  --no-test                skip the test question at the end");
   } else if (command === "setup") {
