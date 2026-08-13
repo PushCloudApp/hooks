@@ -1,6 +1,6 @@
 # PushCloud hooks for coding agents
 
-Approve your agent's tool calls from your phone. When Claude Code hits something
+Approve your agent's tool calls from your phone. When your agent hits something
 it needs permission for, your lock screen gets the command with Approve, Deny and
 a reply box on it. Answer, and the run carries on.
 
@@ -10,7 +10,7 @@ as if this were not installed. It never approves anything on your behalf.
 ## Setup
 
 ```sh
-node src/setup.mjs setup
+npx pushcloud setup
 ```
 
 It asks for two credentials, checks them, writes the hooks, and then sends a
@@ -77,10 +77,36 @@ If you change `wait_seconds`, the `timeout` on the `PreToolUse` hook in
 `settings.json` must stay larger than it, or Claude Code kills the hook while
 you are still looking at the question.
 
-## Other agents
+## Which agents
 
-Cursor, Codex and Gemini CLI are detected and reported, but not yet wired up.
-Claude Code is the only one with hooks today.
+| Agent | Event | Approve from phone |
+| --- | --- | --- |
+| Claude Code | `PreToolUse` | yes |
+| Cursor | `beforeShellExecution` | yes |
+| Codex | `PermissionRequest` | yes |
+| Gemini CLI | | no, see below |
+
+Setup wires up whichever of the first three it finds, and leaves the rest alone.
+
+**Codex** is hooked on `PermissionRequest`, not `PreToolUse`. Its `PreToolUse`
+parser rejects an `allow` that has no `updatedInput`, and rejects `ask`
+outright, so a hook there could only ever say no.
+
+**Gemini CLI** is detected and deliberately not wired up. Its hooks can block a
+tool call and nothing more: there is no way for a hook to grant permission or to
+defer to the user. A phone that can only say no, while Gemini prompts in the
+terminal regardless, is worse than not offering it at all.
+
+## Encryption
+
+Give setup an encryption key and every command is sealed with AES-256-GCM before
+it leaves your machine. The server stores bytes it cannot read; only your phone
+has the key. Generate one under Settings in the panel.
+
+Two things this does not cover, so that nobody assumes otherwise: the button
+labels stay readable, because iOS needs them to draw the notification without
+the key; and the answer coming back is not encrypted, so a typed reply travels
+as plaintext.
 
 ## Tests
 

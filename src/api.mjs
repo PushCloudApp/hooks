@@ -1,6 +1,8 @@
 /// The two PushCloud calls this package makes, in one place so the hook and
 /// `setup` cannot drift into asking the question two different ways.
 
+import { sealBody } from "./seal.mjs";
+
 export async function api(origin, path, credential, init) {
   const res = await fetch(`${origin}${path}`, {
     ...init,
@@ -28,7 +30,8 @@ export const APPROVAL_ACTIONS = [
 export async function askQuestion(cfg, { title, message }) {
   const sent = await api(cfg.api, "/v1/messages", cfg.token, {
     method: "POST",
-    body: JSON.stringify({
+    body: JSON.stringify(
+      sealBody({
       title,
       message,
       // Time-sensitive: someone is sitting in a blocked terminal waiting on
@@ -38,7 +41,8 @@ export async function askQuestion(cfg, { title, message }) {
       // the answer arrives a minute later, it still lands somewhere real.
       expires_in: 3600,
       actions: APPROVAL_ACTIONS,
-    }),
+      }, cfg.e2eeKey)
+    ),
   });
   if (!sent.interaction_id) throw new Error("the message carried no question");
   return sent.interaction_id;
@@ -59,6 +63,6 @@ export async function waitForAnswer(cfg, interactionId, seconds) {
 export async function sendNote(cfg, { title, message }) {
   return api(cfg.api, "/v1/messages", cfg.token, {
     method: "POST",
-    body: JSON.stringify({ title, message, priority: 0 }),
+    body: JSON.stringify(sealBody({ title, message, priority: 0 }, cfg.e2eeKey)),
   });
 }

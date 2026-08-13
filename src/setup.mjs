@@ -18,8 +18,9 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, saveConfig, DEFAULT_CONFIG_PATH } from "./config.mjs";
-import { mergeHooks, removeHooks } from "./settings-merge.mjs";
+import { AGENTS, agentById } from "./agents.mjs";
 import { api, askQuestion, waitForAnswer } from "./api.mjs";
+import { parseKey } from "./seal.mjs";
 
 const HOOK = fileURLToPath(new URL("./pushcloud-hook.mjs", import.meta.url));
 
@@ -43,18 +44,15 @@ function parseArgs(argv) {
 
 /// Which agents this machine appears to have.
 ///
-/// Presence of the settings directory rather than a binary on PATH: an agent
+/// Presence of the config directory rather than a binary on PATH: an agent
 /// installed through a GUI, a version manager or a per-project install may not
 /// be on the PATH of whatever shell this runs in, and a false "not installed"
 /// sends the user hunting for a problem they do not have.
 export function detectAgents(home = homedir()) {
-  const candidates = [
-    { id: "claude", name: "Claude Code", settings: join(home, ".claude", "settings.json"), supported: true },
-    { id: "cursor", name: "Cursor", settings: join(home, ".cursor", "settings.json"), supported: false },
-    { id: "codex", name: "Codex", settings: join(home, ".codex", "config.json"), supported: false },
-    { id: "gemini", name: "Gemini CLI", settings: join(home, ".gemini", "settings.json"), supported: false },
-  ];
-  return candidates.map((c) => ({ ...c, present: existsSync(dirname(c.settings)) }));
+  return AGENTS.map((a) => {
+    const config = a.config(home);
+    return { agent: a, config, present: existsSync(dirname(config)) };
+  });
 }
 
 /// Reads a settings file that may not exist, may be empty, or may be broken.
@@ -124,6 +122,7 @@ async function runSetup(args) {
   let token = args.token ?? null;
   let key = args.key ?? null;
   let machine = args.machine ?? existing.machine ?? null;
+  let e2ee = args["e2ee-key"] ?? existing.e2eeKey ?? null;
 
   if (!token || !key) {
     if (!process.stdin.isTTY) {
@@ -138,6 +137,12 @@ async function runSetup(args) {
       token = token ?? (await prompt(rl, "Application token (pca_...):", existing.token));
       key = key ?? (await prompt(rl, "API key (pck_...):", existing.key));
       machine = machine ?? (await rl.question(`Name for this machine ${dim("[optional]")} `)).trim();
+      // Offered, not demanded. Encryption is worth having for a tool that sends
+      // shell commands, but a user who has never generated a key should not be
+      // stopped here; they can re-run setup once they have one.
+      e2ee =
+        e2ee ??
+        (await rl.question(`Encryption key ${dim("[optional, 64 hex from Settings]")} `)).trim();
     } finally {
       rl.close();
     }
@@ -145,7 +150,10 @@ async function runSetup(args) {
 
   if (!token || !key) throw new Error("both an application token and an API key are needed.");
 
-  const cfg = { ...existing, token, key, machine: machine || null };
+  const cfg = { ...existing, token, key, machine: machine || null, e2eeKey: e2ee || null };
+  // Validated before anything is written, so a mistyped key is caught here
+  // rather than as an unreadable notification on a phone.
+  if (cfg.e2eeKey) parseKey(cfg.e2eeKey);
   process.stdout.write("Checking those credentials... ");
   await verify(cfg);
   say("good.");
@@ -156,31 +164,41 @@ async function runSetup(args) {
       token: cfg.token,
       key: cfg.key,
       machine: cfg.machine,
+      e2ee_key: cfg.e2eeKey,
       wait_seconds: cfg.waitSeconds,
     },
     configPath
   );
   say(`Saved to ${configPath} ${dim("(readable only by you)")}`);
+  if (cfg.e2eeKey) say(dim("Commands will be encrypted before they leave this machine."));
 
-  // Hooks
-  const agents = detectAgents();
-  const claude = agents.find((a) => a.id === "claude");
-  const settingsPath = args["claude-settings"] ? resolve(args["claude-settings"]) : claude.settings;
+  // Hooks, into every agent this machine has that can actually approve.
+  const detected = detectAgents();
+  const only = args.agent ? String(args.agent).split(",") : null;
+  const targets = detected.filter(
+    (d) => d.agent.approves && (only ? only.includes(d.agent.id) : d.present)
+  );
 
-  const settings = readSettings(settingsPath);
-  const merged = mergeHooks(settings, {
-    command: `node ${HOOK}`,
-    matcher: args.matcher ?? "Bash",
-  });
-  writeSettings(settingsPath, merged);
-  say(`Hooks written to ${settingsPath}`);
-  say(dim(`  PreToolUse  ${args.matcher ?? "Bash"}  ->  ask on your phone`));
-  say(dim("  Stop        a push when a run finishes"));
+  // An explicit --claude-settings overrides where the Claude entry goes, which
+  // is how the tests drive this without touching a real home directory.
+  const pathFor = (d) =>
+    d.agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : d.config;
 
-  const missing = agents.filter((a) => a.present && !a.supported);
-  if (missing.length) {
+  if (targets.length === 0) say("\nNo supported agent found on this machine. Nothing to wire up.");
+  for (const target of targets) {
+    const path = pathFor(target);
+    const written = target.agent.install(readSettings(path), {
+      command: `node ${HOOK}`,
+      matcher: args.matcher ?? target.agent.defaultMatcher,
+      waitSeconds: cfg.waitSeconds,
+    });
+    writeSettings(path, written);
+    say(`${target.agent.name}: hooks written to ${path}`);
+  }
+
+  for (const d of detected.filter((x) => x.present && !x.agent.approves)) {
     say();
-    say(`Also found ${missing.map((a) => a.name).join(", ")}. Support for those is coming.`);
+    say(`Found ${d.agent.name}, and left it alone: ${d.agent.why}.`);
   }
 
   // The proof.
@@ -214,12 +232,17 @@ async function runSetup(args) {
 }
 
 async function runRemove(args) {
-  const settingsPath = args["claude-settings"]
-    ? resolve(args["claude-settings"])
-    : detectAgents().find((a) => a.id === "claude").settings;
-  const settings = readSettings(settingsPath);
-  writeSettings(settingsPath, removeHooks(settings));
-  say(`Removed the PushCloud hooks from ${settingsPath}`);
+  // Every agent, not just the ones detected: a config directory that has since
+  // been deleted can still hold our hooks, and an uninstall that leaves some
+  // behind is worse than none at all.
+  for (const d of detectAgents()) {
+    if (!d.agent.approves) continue;
+    const path =
+      d.agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : d.config;
+    if (!existsSync(path)) continue;
+    writeSettings(path, d.agent.uninstall(readSettings(path)));
+    say(`Removed the PushCloud hooks from ${path}`);
+  }
   say(dim(`Credentials are left at ${DEFAULT_CONFIG_PATH}; delete that file to finish.`));
 }
 
@@ -245,9 +268,11 @@ try {
     say("  --token pca_...          application token, instead of being asked");
     say("  --key pck_...            API key with the read scope");
     say("  --machine NAME           what to call this machine on the push");
-    say("  --matcher REGEX          which tools to ask about (default: Bash)");
+    say("  --matcher REGEX          which tools to ask about (Claude Code only)");
+    say("  --agent ID               wire up just this one (claude, cursor, codex)");
     say("  --claude-settings PATH   settings file to write (default: ~/.claude/settings.json)");
     say("  --config PATH            where to keep credentials");
+    say("  --e2ee-key HEX           encrypt commands before they leave the machine");
     say("  --no-test                skip the test question at the end");
   } else if (command === "setup") {
     await runSetup(args);

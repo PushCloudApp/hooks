@@ -17,6 +17,11 @@
 
 import { loadConfig } from "./config.mjs";
 import { askQuestion, waitForAnswer, sendNote } from "./api.mjs";
+import { agentById } from "./agents.mjs";
+
+/// Which agent invoked us, and therefore which dialect to answer in. `setup`
+/// writes the flag; the default keeps a hand-written Claude Code config working.
+const agent = agentById(process.argv.includes("--agent") ? process.argv[process.argv.indexOf("--agent") + 1] : "claude") ?? agentById("claude");
 
 /// How much of a command to put on a lock screen.
 ///
@@ -33,15 +38,7 @@ const MAX_PREVIEW = 300;
 /// that nobody typed is a remote code execution with extra steps, so it is only
 /// ever printed for a button an actual human actually tapped.
 function decide(decision, reason) {
-  process.stdout.write(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: decision,
-        permissionDecisionReason: reason,
-      },
-    })
-  );
+  process.stdout.write(JSON.stringify(agent.verdict(decision, reason)));
   process.exit(0);
 }
 
@@ -74,8 +71,8 @@ export function describe(toolName, input = {}) {
 
 /// "PushCloud" alone on a lock screen does not say which of your three machines
 /// is blocked. The hostname and the project directory do.
-export function where(payload, machine) {
-  const project = payload.cwd ? payload.cwd.split("/").filter(Boolean).pop() : null;
+export function where(call, machine) {
+  const project = call.cwd ? call.cwd.split("/").filter(Boolean).pop() : null;
   return [machine, project].filter(Boolean).join(" · ") || "Claude Code";
 }
 
@@ -89,10 +86,12 @@ async function ask() {
     return decide("ask", "PushCloud: not set up on this machine, run `pushcloud setup`");
   }
 
+  const call = agent.read(payload);
+
   try {
     const interactionId = await askQuestion(cfg, {
-      title: where(payload, cfg.machine),
-      message: describe(payload.tool_name ?? "a tool", payload.tool_input),
+      title: where(call, cfg.machine),
+      message: describe(call.toolName, call.input),
     });
 
     const answer = await waitForAnswer(cfg, interactionId, cfg.waitSeconds);
@@ -123,7 +122,7 @@ async function notify() {
   if (!cfg.token) return;
   try {
     await sendNote(cfg, {
-      title: where(payload, cfg.machine),
+      title: where(agent.read(payload), cfg.machine),
       message: payload.message ?? "Your run has finished.",
     });
   } catch {

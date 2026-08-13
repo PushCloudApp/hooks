@@ -31,6 +31,9 @@ export function loadConfig(path = DEFAULT_CONFIG_PATH) {
     token: process.env.PUSHCLOUD_TOKEN || file.token || null,
     key: process.env.PUSHCLOUD_KEY || file.key || null,
     machine: process.env.PUSHCLOUD_MACHINE || file.machine || null,
+    /// Optional. Present means every command this hook sends is sealed before
+    /// it leaves the machine, and the server stores bytes it cannot read.
+    e2eeKey: process.env.PUSHCLOUD_E2EE_KEY || file.e2ee_key || null,
     waitSeconds: Number(process.env.PUSHCLOUD_WAIT_SECONDS ?? file.wait_seconds ?? 120),
   };
 }

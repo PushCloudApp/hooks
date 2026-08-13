@@ -1,13 +1,34 @@
 {
-  "name": "@pushcloud/agent-hooks",
+  "name": "pushcloud",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "description": "Approve your coding agent's tool calls from your phone.",
+  "description": "Approve your coding agent's tool calls from your phone. Claude Code, Cursor and Codex.",
+  "keywords": [
+    "claude-code",
+    "cursor",
+    "codex",
+    "hooks",
+    "push-notifications",
+    "human-in-the-loop",
+    "ai-agents"
+  ],
+  "homepage": "https://pushcloud.app",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BobzTH/PushCloud.git",
+    "directory": "tools/agent-hooks"
+  },
+  "license": "MIT",
+  "author": "Bobby Holmes",
   "bin": {
     "pushcloud": "src/setup.mjs",
     "pushcloud-hook": "src/pushcloud-hook.mjs"
   },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""
   },

@@ -93,7 +93,7 @@ describe("pushcloud setup", () => {
     assert.equal(config.key, "pck_good");
 
     const settings = JSON.parse(readFileSync(w.settings, "utf8"));
-    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /pushcloud-hook\.mjs ask$/);
+    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /pushcloud-hook\.mjs ask --agent claude$/);
 
     // The test question is the point of the last step: a setup that writes
     // files and never proves a phone can answer is a setup that fails silently.
