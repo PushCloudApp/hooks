@@ -1,0 +1,16 @@
+{
+  "name": "@pushcloud/agent-hooks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Approve your coding agent's tool calls from your phone.",
+  "bin": {
+    "pushcloud-hook": "src/pushcloud-hook.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
