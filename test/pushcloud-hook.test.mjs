@@ -39,7 +39,7 @@ async function fakeApi(plan) {
 function run(mode, payload, env) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK, mode], {
-      env: { ...process.env, ...env },
+      env: { ...process.env, PUSHCLOUD_CONFIG: "/nonexistent/pushcloud.json", ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";
@@ -150,7 +150,13 @@ describe("ask", () => {
       interaction: { status: "responded", response: JSON.stringify({ action_id: "allow" }) },
     });
     const child = spawn(process.execPath, [HOOK, "ask"], {
-      env: { ...process.env, PUSHCLOUD_API: api.origin, PUSHCLOUD_KEY: "pck_x", PUSHCLOUD_TOKEN: "pca_x" },
+      env: {
+        ...process.env,
+        PUSHCLOUD_CONFIG: "/nonexistent/pushcloud.json",
+        PUSHCLOUD_API: api.origin,
+        PUSHCLOUD_KEY: "pck_x",
+        PUSHCLOUD_TOKEN: "pca_x",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";

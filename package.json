@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Approve your coding agent's tool calls from your phone.",
   "bin": {
+    "pushcloud": "src/setup.mjs",
     "pushcloud-hook": "src/pushcloud-hook.mjs"
   },
   "scripts": {

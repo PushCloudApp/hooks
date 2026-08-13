@@ -1,79 +1,51 @@
-# PushCloud hooks for Claude Code
+# PushCloud hooks for coding agents
 
-Approve Claude Code's tool calls from your phone. When Claude hits something it
-needs permission for, your lock screen gets the command with Approve and Deny on
-it. Tap one and the run carries on.
+Approve your agent's tool calls from your phone. When Claude Code hits something
+it needs permission for, your lock screen gets the command with Approve, Deny and
+a reply box on it. Answer, and the run carries on.
 
 If you don't answer, nothing happens: you get the normal terminal prompt, exactly
 as if this were not installed. It never approves anything on your behalf.
 
 ## Setup
 
-Two credentials, from the PushCloud panel:
+```sh
+node src/setup.mjs setup
+```
 
-- an **application token** (`pca_...`), from the application you want these
-  notifications to come from. This sends the question.
+It asks for two credentials, checks them, writes the hooks, and then sends a
+question to your phone that you have to answer before it says it worked.
+
+The two credentials, both from the PushCloud panel:
+
+- an **application token** (`pca_...`), from the application these notifications
+  should come from. This sends the question.
 - an **API key** (`pck_...`) with the `read` scope, from Settings. This waits for
   your answer.
 
 They are separate because an application token deliberately cannot read your
 account, and a hook only needs to read the one answer it is waiting on.
 
-```sh
-export PUSHCLOUD_TOKEN=pca_...
-export PUSHCLOUD_KEY=pck_...
-export PUSHCLOUD_MACHINE=$(hostname -s)   # optional, names the machine on the push
-```
+Credentials go to `~/.pushcloud/config.json`, readable only by you. Not into
+`settings.json`, which people commit to repos.
 
-Then in `~/.claude/settings.json`, or a project's `.claude/settings.json`:
+### Commands
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /path/to/tools/agent-hooks/src/pushcloud-hook.mjs ask",
-            "timeout": 130
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node /path/to/tools/agent-hooks/src/pushcloud-hook.mjs notify"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+| | |
+| --- | --- |
+| `setup` | Ask, verify, write, and prove it works. |
+| `test` | Send another test question. Use this if the first one never arrived. |
+| `remove` | Take the hooks back out, leaving everything else in the file alone. |
 
-The `timeout` must be larger than `PUSHCLOUD_WAIT_SECONDS` (120 by default), or
-Claude Code kills the hook while your finger is on the button.
+Useful flags: `--token`, `--key`, `--machine`, `--matcher`, `--no-test`,
+`--claude-settings PATH`, `--config PATH`. Run `help` for the full list.
 
 ## What to route through it
 
-Start with `Bash` only. A matcher of `.*` sends you a push for every file read,
-and you will turn the whole thing off within an hour. Tools you have already
-allowlisted never reach a hook at all, so the matcher is the only lever you have.
-
-## Settings
-
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `PUSHCLOUD_TOKEN` | none | Application token (`pca_`) that sends the question. |
-| `PUSHCLOUD_KEY` | none | API key (`pck_`) with the `read` scope, which waits for the answer. Without either credential the hook only ever falls through. |
-| `PUSHCLOUD_WAIT_SECONDS` | `120` | How long to hold the terminal waiting for a tap. Max 300. |
-| `PUSHCLOUD_MACHINE` | none | Name shown on the push, so three machines are tellable apart. |
-| `PUSHCLOUD_API` | `https://pushcloud.app` | Override the origin. |
+The default is `Bash` only. A matcher of `.*` sends you a push for every file
+read, and you will turn the whole thing off within an hour. Tools you have
+already allowlisted never reach a hook at all, so the matcher is the only lever
+you have.
 
 ## What ends up on your phone
 
@@ -81,12 +53,34 @@ The title is your machine and the project directory. The body is the command for
 `Bash`, or the path for a file tool, truncated to 300 characters.
 
 That means **the command text leaves your machine and appears on a lock screen**.
-If your commands contain secrets inline, that is worth a thought before you wire
-this to a shared or borrowed phone.
+If your commands carry secrets inline, that is worth a thought.
 
 Three answers, not two: Approve, Deny, and a reply box. Typing an answer denies
 the call and passes your words to Claude, so "no, rebase instead" works and it
-gets to act on the reason rather than guessing at it.
+gets to act on the reason rather than guessing.
+
+## Settings
+
+Everything in `~/.pushcloud/config.json` can be overridden by an environment
+variable, which is what CI and a second account should use.
+
+| Variable | Config key | Default |
+| --- | --- | --- |
+| `PUSHCLOUD_TOKEN` | `token` | none |
+| `PUSHCLOUD_KEY` | `key` | none |
+| `PUSHCLOUD_MACHINE` | `machine` | none |
+| `PUSHCLOUD_WAIT_SECONDS` | `wait_seconds` | `120` |
+| `PUSHCLOUD_API` | `api` | `https://pushcloud.app` |
+| `PUSHCLOUD_CONFIG` | | `~/.pushcloud/config.json` |
+
+If you change `wait_seconds`, the `timeout` on the `PreToolUse` hook in
+`settings.json` must stay larger than it, or Claude Code kills the hook while
+you are still looking at the question.
+
+## Other agents
+
+Cursor, Codex and Gemini CLI are detected and reported, but not yet wired up.
+Claude Code is the only one with hooks today.
 
 ## Tests
 
