@@ -15,7 +15,7 @@
   "homepage": "https://pushcloud.app",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/BobzTH/pushcloud-hooks.git"
+    "url": "git+https://github.com/PushCloudApp/hooks.git"
   },
   "license": "MIT",
   "author": "Bobby Holmes",
@@ -35,6 +35,6 @@
     "node": ">=20"
   },
   "bugs": {
-    "url": "https://github.com/BobzTH/pushcloud-hooks/issues"
+    "url": "https://github.com/PushCloudApp/hooks/issues"
   }
 }
