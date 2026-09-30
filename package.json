@@ -2,7 +2,7 @@
   "name": "pushcloud",
   "version": "0.2.0",
   "type": "module",
-  "description": "Approve your coding agent's tool calls from your phone. Claude Code, Cursor and Codex.",
+  "description": "Pair your coding agent with your phone in one line: npx pushcloud pair <code>. Approvals, sessions and the PushCloud MCP server for Claude Code, Codex and Cursor.",
   "keywords": [
     "claude-code",
     "cursor",

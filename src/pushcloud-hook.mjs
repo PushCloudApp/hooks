@@ -94,8 +94,8 @@ async function ask() {
 
   // Refuse to be the reason a tool call is approved. Anything wrong here, and
   // the user simply gets the prompt they would have got anyway.
-  if (!cfg.token || !cfg.key) {
-    return decide("ask", "PushCloud: not set up on this machine, run `pushcloud setup`");
+  if (!cfg.token) {
+    return decide("ask", "PushCloud: not set up on this machine, run `npx pushcloud pair <code>`");
   }
 
   const call = agent.read(payload);

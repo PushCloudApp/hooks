@@ -43,6 +43,11 @@ before(async () => {
       return res.end(JSON.stringify({ message: { id: "m1" }, interaction_id: "i1" }));
     }
     if (req.url.includes("/wait")) {
+      // A token the server will not let wait on its own question.
+      if (req.headers.authorization === "Bearer pca_nowait") {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: { code: "UNAUTHORIZED" } }));
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       return res.end(
         JSON.stringify({
@@ -256,7 +261,68 @@ describe("pushcloud setup", () => {
     const w = workspace();
     const { code, err } = await run(["setup", "--config", w.config, "--claude-settings", w.settings]);
     assert.equal(code, 1);
-    assert.match(err, /--token and --key/);
+    assert.match(err, /--token/);
+  });
+});
+
+describe("token-only setup", () => {
+  const tokenOnly = (w, token, extra = []) => [
+    "setup",
+    "--token",
+    token,
+    "--claude-settings",
+    w.settings,
+    "--config",
+    w.config,
+    ...extra,
+  ];
+
+  test("a token that can wait needs no key, and none is written", async () => {
+    const w = workspace();
+    seen = [];
+    const { out, err, code } = await run(tokenOnly(w, "pca_good"));
+    assert.equal(code, 0, out + err);
+    const config = JSON.parse(readFileSync(w.config, "utf8"));
+    assert.equal(config.token, "pca_good");
+    assert.ok(!("key" in config) || config.key == null);
+    assert.ok(seen.some((r) => r.path.includes("/wait?timeout=1") && r.auth === "Bearer pca_good"));
+    assert.ok(!seen.some((r) => r.path.startsWith("/v1/interactions?")), "no key check");
+    assert.match(out, /Done\. Your agent can reach you\./);
+  });
+
+  test("a token the server refuses to wait with falls back to a key", async () => {
+    const w = workspace();
+    seen = [];
+    const { out, err, code } = await run(tokenOnly(w, "pca_nowait", ["--key", "pck_good"]));
+    assert.equal(code, 0, out + err);
+    assert.equal(JSON.parse(readFileSync(w.config, "utf8")).key, "pck_good");
+    assert.ok(seen.some((r) => r.path.includes("/wait?timeout=1") && r.auth === "Bearer pca_nowait"));
+  });
+
+  test("a refused token and no key stops without writing", async () => {
+    const w = workspace();
+    const { code, err } = await run(tokenOnly(w, "pca_nowait"));
+    assert.equal(code, 1);
+    assert.match(err, /--key/);
+    assert.equal(existsSync(w.config), false);
+    assert.equal(existsSync(w.settings), false);
+  });
+});
+
+describe("package", () => {
+  test("help lists pair first", async () => {
+    const { out } = await run(["help"]);
+    const lines = out.split("\n");
+    const usage = lines.find((l) => l.startsWith("usage:"));
+    assert.match(usage, /<pair\|setup/);
+    const cmds = lines.filter((l) => /^  (pair|setup|remove|test)\b/.test(l));
+    assert.match(cmds[0], /^  pair/);
+  });
+
+  test("version is 0.2.0 with no runtime dependencies", () => {
+    const pkg = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8"));
+    assert.equal(pkg.version, "0.2.0");
+    assert.equal(Object.keys(pkg.dependencies ?? {}).length, 0);
   });
 });
 

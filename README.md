@@ -7,24 +7,57 @@ a reply box on it. Answer, and the run carries on.
 If you don't answer, nothing happens: you get the normal terminal prompt, exactly
 as if this were not installed. It never approves anything on your behalf.
 
-## Setup
+## Pair
+
+On your phone, open PushCloud, add a source and choose your agent. It shows a
+six digit code. Then, on the machine your agent runs on:
+
+```sh
+npx pushcloud pair 482913
+```
+
+Tap **Connect** on your phone and that is it. Pairing writes the hooks, registers
+the PushCloud MCP server with your agent, installs the skill, and sends a test
+question you answer on your phone. Nothing is written to disk until you tap
+Connect, and a code is single use and lasts ten minutes.
+
+Agents are free on every plan.
+
+### Claude Code
+
+Pair wires the `PreToolUse` approval hook, session reporting, the MCP server
+(`claude mcp add`) and the skill in `~/.claude/skills/pushcloud/`.
+
+### Codex
+
+Pair registers the MCP server (`codex mcp add`, or `~/.codex/config.toml`) and hooks
+`PermissionRequest`, so approvals come to your phone.
+
+### Cursor
+
+Pair registers the MCP server in `~/.cursor/mcp.json` and hooks
+`beforeShellExecution`.
+
+### Other
+
+Any agent that speaks MCP can use PushCloud. Choose **Other** on your phone: it
+shows the MCP server URL and the header to send, and pair writes nothing.
+
+## Setup (manual)
+
+If you cannot pair, `setup` does the same by hand:
 
 ```sh
 npx pushcloud setup
 ```
 
-It asks for two credentials, checks them, writes the hooks, and then sends a
-question to your phone that you have to answer before it says it worked.
+It asks for one credential, an **application token** (`pca_...`), from the
+source's page in the PushCloud panel. It checks it, sends a test question to
+your phone, writes the hooks, and then waits for you to answer it.
 
-The two credentials, both from the PushCloud panel:
-
-- an **application token** (`pca_...`), from the application these notifications
-  should come from. This sends the question.
-- an **API key** (`pck_...`) with the `read` scope, from Settings. This waits for
-  your answer.
-
-They are separate because an application token deliberately cannot read your
-account, and a hook only needs to read the one answer it is waiting on.
+Some accounts also need an **API key** (`pck_...`, `read` scope, from Settings)
+to wait for answers. Setup finds out by itself and only then asks for one.
+Pass `--token` (and `--key`) to skip the prompts.
 
 Credentials go to `~/.pushcloud/config.json`, readable only by you. Not into
 `settings.json`, which people commit to repos.
@@ -33,7 +66,8 @@ Credentials go to `~/.pushcloud/config.json`, readable only by you. Not into
 
 | | |
 | --- | --- |
-| `setup` | Ask, verify, write, and prove it works. |
+| `pair <code>` | Connect this machine with the code from your phone. |
+| `setup` | The manual path: token, verify, write, and prove it works. |
 | `test` | Send another test question. Use this if the first one never arrived. |
 | `remove` | Take the hooks back out, leaving everything else in the file alone. |
 
@@ -67,7 +101,7 @@ variable, which is what CI and a second account should use.
 | Variable | Config key | Default |
 | --- | --- | --- |
 | `PUSHCLOUD_TOKEN` | `token` | none |
-| `PUSHCLOUD_KEY` | `key` | none |
+| `PUSHCLOUD_KEY` | `key` | none (only some accounts need one) |
 | `PUSHCLOUD_MACHINE` | `machine` | none |
 | `PUSHCLOUD_WAIT_SECONDS` | `wait_seconds` | `120` |
 | `PUSHCLOUD_API` | `api` | `https://pushcloud.app` |
@@ -80,7 +114,7 @@ you are still looking at the question.
 
 ## The skill
 
-Setup also writes a skill to `~/.claude/skills/pushcloud/`. The hooks make an agent able
+Pair and setup also write a skill to `~/.claude/skills/pushcloud/`. The hooks make an agent able
 to reach you; the skill is what tells it *when* it should - stop and ask before something
 irreversible, say so when a long task finishes, and read a denial's reason rather than
 trying a variation of the thing you just refused.
@@ -96,7 +130,7 @@ It is a plain markdown file. Read it, and edit it if you disagree with any of it
 | Codex | `PermissionRequest` | yes |
 | Gemini CLI | | no, see below |
 
-Setup wires up whichever of the first three it finds, and leaves the rest alone.
+`setup` wires up whichever of the first three it finds, and leaves the rest alone.
 
 **Codex** is hooked on `PermissionRequest`, not `PreToolUse`. Its `PreToolUse`
 parser rejects an `allow` that has no `updatedInput`, and rejects `ask`

@@ -67,20 +67,31 @@ async function prompt(rl, question, existing) {
 
 /// Proves the credentials before anything is written.
 ///
-/// The two are checked differently because they can be. The key has a read
-/// endpoint it either passes or fails, so it gets a real call. The token has
-/// none: an application token can only send, and the send in step 4 is its
-/// real test - so all that can be checked cheaply here is that the user has
-/// not pasted the two values into each other's prompt, which is the mistake
-/// they are actually going to make.
+/// The token is only checked for shape here; its real test is the send in
+/// `runSetup`. A key, when one is needed at all, has a read endpoint it either
+/// passes or fails, so it gets a real call.
 async function verify(cfg) {
+  if (!cfg.token.startsWith("pca_")) {
+    throw new Error("that does not look like an application token (they start with `pca_`).");
+  }
+  if (!cfg.key) return;
   try {
     await api(cfg.api, "/v1/interactions?limit=1", cfg.key);
   } catch (err) {
     throw new Error(`that API key was refused (${err.message}). It needs the \`read\` scope.`);
   }
-  if (!cfg.token.startsWith("pca_")) {
-    throw new Error("that does not look like an application token (they start with `pca_`).");
+}
+
+/// Can the application token wait on the question it just asked? Newer servers
+/// say yes, and then no API key is needed anywhere. A 401/403 means this server
+/// still wants a `pck_` key for waiting. Anything else is a real failure.
+async function tokenCanWait(cfg, interactionId) {
+  try {
+    await api(cfg.api, `/v1/interactions/${interactionId}/wait?timeout=1`, cfg.token);
+    return true;
+  } catch (err) {
+    if (/-> (401|403)$/.test(err.message)) return false;
+    throw err;
   }
 }
 
@@ -91,25 +102,25 @@ async function runSetup(args) {
   say();
   say(bold("PushCloud setup"));
   say("Approve your coding agent's tool calls from your phone.");
+  say(dim("Usually `npx pushcloud pair <code>` from the phone is quicker. This is the manual path."));
   say();
 
   let token = args.token ?? null;
   let key = args.key ?? null;
   let machine = args.machine ?? existing.machine ?? null;
   let e2ee = args["e2ee-key"] ?? existing.e2eeKey ?? null;
+  let rl = null;
 
-  if (!token || !key) {
-    if (!process.stdin.isTTY) {
-      throw new Error("no terminal to ask on. Pass --token and --key.");
-    }
-    say(`Both of these are in the panel at ${existing.api}:`);
-    say(dim("  application token  Applications, then the one these should come from"));
-    say(dim("  API key            Settings, with the `read` scope"));
-    say();
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      token = token ?? (await prompt(rl, "Application token (pca_...):", existing.token));
-      key = key ?? (await prompt(rl, "API key (pck_...):", existing.key));
+  try {
+    if (!token) {
+      if (!process.stdin.isTTY) {
+        throw new Error("no terminal to ask on. Pass --token (and --key if asked for one).");
+      }
+      say(`The application token is in the panel at ${existing.api}:`);
+      say(dim("  Apps, then the one these should come from"));
+      say();
+      rl = createInterface({ input: process.stdin, output: process.stdout });
+      token = await prompt(rl, "Application token (pca_...):", existing.token);
       machine = machine ?? (await rl.question(`Name for this machine ${dim("[optional]")} `)).trim();
       // Offered, not demanded. Encryption is worth having for a tool that sends
       // shell commands, but a user who has never generated a key should not be
@@ -117,103 +128,120 @@ async function runSetup(args) {
       e2ee =
         e2ee ??
         (await rl.question(`Encryption key ${dim("[optional, 64 hex from Settings]")} `)).trim();
-    } finally {
-      rl.close();
     }
-  }
 
-  if (!token || !key) throw new Error("both an application token and an API key are needed.");
+    if (!token) throw new Error("an application token is needed.");
 
-  const cfg = { ...existing, token, key, machine: machine || null, e2eeKey: e2ee || null };
-  // Validated before anything is written, so a mistyped key is caught here
-  // rather than as an unreadable notification on a phone.
-  if (cfg.e2eeKey) parseKey(cfg.e2eeKey);
-  process.stdout.write("Checking those credentials... ");
-  await verify(cfg);
-  say("good.");
+    const cfg = { ...existing, token, key, machine: machine || null, e2eeKey: e2ee || null };
+    // Validated before anything is written, so a mistyped key is caught here
+    // rather than as an unreadable notification on a phone.
+    if (cfg.e2eeKey) parseKey(cfg.e2eeKey);
+    process.stdout.write("Checking those credentials... ");
+    await verify(cfg);
+    say("good.");
 
-  saveConfig(
-    {
-      api: cfg.api,
-      token: cfg.token,
-      key: cfg.key,
-      machine: cfg.machine,
-      e2ee_key: cfg.e2eeKey,
-      wait_seconds: cfg.waitSeconds,
-    },
-    configPath
-  );
-  say(`Saved to ${configPath} ${dim("(readable only by you)")}`);
-  if (cfg.e2eeKey) say(dim("Commands will be encrypted before they leave this machine."));
+    // The test question goes out before anything is written: it is the token's
+    // real check, and whether the token can wait on it decides if a key is needed.
+    let interactionId = null;
+    if (!args["no-test"]) {
+      say("Sending a test question to your phone.");
+      interactionId = await askQuestion(cfg, {
+        title: cfg.machine ? `${cfg.machine} · setup` : "PushCloud setup",
+        message: "This is PushCloud asking. Tap Approve to finish setting up.",
+      });
+      if (!(await tokenCanWait(cfg, interactionId)) && !cfg.key) {
+        // This server wants a key to wait with, as it always used to.
+        if (!rl && process.stdin.isTTY) rl = createInterface({ input: process.stdin, output: process.stdout });
+        if (!rl) {
+          throw new Error("this account needs an API key to wait for answers. Pass --key pck_... (Settings, `read` scope).");
+        }
+        say("This account needs an API key to wait for answers (Settings, with the `read` scope).");
+        cfg.key = await prompt(rl, "API key (pck_...):", existing.key);
+        if (!cfg.key) throw new Error("an API key is needed.");
+        await verify(cfg);
+      }
+    }
 
-  // Hooks, into every agent this machine has that can actually approve.
-  const detected = detectAgents();
-  const only = args.agent ? String(args.agent).split(",") : null;
-  const targets = detected.filter(
-    (d) => d.agent.approves && (only ? only.includes(d.agent.id) : d.present)
-  );
+    saveConfig(
+      {
+        api: cfg.api,
+        token: cfg.token,
+        key: cfg.key || null,
+        machine: cfg.machine,
+        e2ee_key: cfg.e2eeKey,
+        wait_seconds: cfg.waitSeconds,
+      },
+      configPath
+    );
+    say(`Saved to ${configPath} ${dim("(readable only by you)")}`);
+    if (cfg.e2eeKey) say(dim("Commands will be encrypted before they leave this machine."));
 
-  // An explicit --claude-settings overrides where the Claude entry goes, which
-  // is how the tests drive this without touching a real home directory.
-  const pathFor = (d) =>
-    d.agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : d.config;
+    // Hooks, into every agent this machine has that can actually approve.
+    const detected = detectAgents();
+    const only = args.agent ? String(args.agent).split(",") : null;
+    const targets = detected.filter(
+      (d) => d.agent.approves && (only ? only.includes(d.agent.id) : d.present)
+    );
 
-  if (targets.length === 0) say("\nNo supported agent found on this machine. Nothing to wire up.");
-  // The hook runs from ~/.pushcloud/bin, not from this package: under npx the
-  // package sits in a cache npm prunes, which would break every hook at once.
-  if (targets.length > 0) installBin();
-  for (const target of targets) {
-    const path = pathFor(target);
-    const written = target.agent.install(readSettings(path), {
-      command: hookCommand(),
-      matcher: args.matcher ?? target.agent.defaultMatcher,
-      waitSeconds: cfg.waitSeconds,
-    });
-    writeSettings(path, written);
-    say(`${target.agent.name}: hooks written to ${path}`);
-  }
+    // An explicit --claude-settings overrides where the Claude entry goes, which
+    // is how the tests drive this without touching a real home directory.
+    const pathFor = (d) =>
+      d.agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : d.config;
 
-  // The skill is the other half of this, and the half that decides whether the
-  // product is used well: the hook makes an agent *able* to reach you, and the
-  // skill tells it when it should. Claude Code only for now - it is the one with
-  // a skills directory.
-  if (targets.some((t) => t.agent.id === "claude")) {
-    const installed = installSkill(args["skills-dir"]);
-    if (installed) say(`Skill written to ${installed}`);
-  }
+    if (targets.length === 0) say("\nNo supported agent found on this machine. Nothing to wire up.");
+    // The hook runs from ~/.pushcloud/bin, not from this package: under npx the
+    // package sits in a cache npm prunes, which would break every hook at once.
+    if (targets.length > 0) installBin();
+    for (const target of targets) {
+      const path = pathFor(target);
+      const written = target.agent.install(readSettings(path), {
+        command: hookCommand(),
+        matcher: args.matcher ?? target.agent.defaultMatcher,
+        waitSeconds: cfg.waitSeconds,
+      });
+      writeSettings(path, written);
+      say(`${target.agent.name}: hooks written to ${path}`);
+    }
 
-  for (const d of detected.filter((x) => x.present && !x.agent.approves)) {
+    // The skill is the other half of this, and the half that decides whether the
+    // product is used well: the hook makes an agent *able* to reach you, and the
+    // skill tells it when it should. Claude Code only for now.
+    if (targets.some((t) => t.agent.id === "claude")) {
+      const installed = installSkill(args["skills-dir"]);
+      if (installed) say(`Skill written to ${installed}`);
+    }
+
+    for (const d of detected.filter((x) => x.present && !x.agent.approves)) {
+      say();
+      say(`Found ${d.agent.name}, and left it alone: ${d.agent.why}.`);
+    }
+
+    // The proof.
+    if (!interactionId) {
+      say();
+      say("Skipping the test question.");
+      return;
+    }
     say();
-    say(`Found ${d.agent.name}, and left it alone: ${d.agent.why}.`);
-  }
+    say("Tap Approve on the test question on your phone.");
+    const answer = await waitForAnswer(cfg, interactionId, 120);
 
-  // The proof.
-  if (args["no-test"]) {
     say();
-    say("Skipping the test question.");
-    return;
-  }
-  say();
-  say("Sending a test question to your phone. Tap Approve on it.");
-  const interactionId = await askQuestion(cfg, {
-    title: cfg.machine ? `${cfg.machine} · setup` : "PushCloud setup",
-    message: "This is PushCloud asking. Tap Approve to finish setting up.",
-  });
-  const answer = await waitForAnswer(cfg, interactionId, 120);
-
-  say();
-  if (answer?.action_id === "allow") {
-    say(bold("Done. Your agent can reach you."));
-  } else if (answer) {
-    // Denying the test still proves the loop: the answer travelled from a phone
-    // to this terminal, which is the only thing being tested.
-    say(bold("That works too - the answer got back here."));
-  } else {
-    // Not a failure of the install. The hooks are written and the credentials
-    // are good; the only thing unproven is whether a device is registered.
-    say("No answer came back within two minutes.");
-    say("The setup is written and valid. Check the PushCloud app is installed");
-    say("and signed in on your phone, then run `pushcloud setup --test-only`.");
+    if (answer?.action_id === "allow") {
+      say(bold("Done. Your agent can reach you."));
+    } else if (answer) {
+      // Denying the test still proves the loop: the answer travelled from a phone
+      // to this terminal, which is the only thing being tested.
+      say(bold("That works too - the answer got back here."));
+    } else {
+      // Not a failure of the install. The hooks are written and the credentials
+      // are good; the only thing unproven is whether a device is registered.
+      say("No answer came back within two minutes.");
+      say("The setup is written and valid. Check the PushCloud app is installed");
+      say("and signed in on your phone, then run `pushcloud test`.");
+    }
+  } finally {
+    rl?.close();
   }
 }
 
@@ -249,7 +277,7 @@ async function runRemove(args) {
 
 async function runTestOnly(args) {
   const cfg = loadConfig(args.config ? resolve(args.config) : DEFAULT_CONFIG_PATH);
-  if (!cfg.token || !cfg.key) throw new Error("not set up yet. Run `pushcloud setup`.");
+  if (!cfg.token) throw new Error("not set up yet. Run `npx pushcloud pair <code>`.");
   say("Sending a test question. Tap anything on it.");
   const id = await askQuestion(cfg, {
     title: cfg.machine ?? "PushCloud",
@@ -267,9 +295,12 @@ try {
     say("usage: pushcloud <pair|setup|remove|test> [options]");
     say();
     say("  pair <code>              connect this machine with the code from your phone");
+    say("  setup                    manual path: paste an application token");
+    say("  remove                   take the hooks back out");
+    say("  test                     send another test question");
     say();
     say("  --token pca_...          application token, instead of being asked");
-    say("  --key pck_...            API key with the read scope");
+    say("  --key pck_...            API key with the read scope (only if your account asks)");
     say("  --machine NAME           what to call this machine on the push");
     say("  --matcher REGEX          which tools to ask about (Claude Code only)");
     say("  --agent ID               wire up just this one (claude, cursor, codex)");

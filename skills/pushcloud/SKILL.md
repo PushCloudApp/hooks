@@ -59,7 +59,7 @@ person gets the stakes and the options as what they are, rather than buried in p
 A timeout is not a no. It means they have not looked yet, and the question is still
 waiting on their phone. Say so, and either wait again or stop and leave it for them.
 
-**Without MCP**, `npx pushcloud setup` installs a permission hook, and their phone is
+**Without MCP**, `npx pushcloud pair <code>` (code from the phone's Apps tab) installs a permission hook, and their phone is
 asked automatically whenever you need approval for a tool call. Nothing to call.
 
 ## Writing the notification
