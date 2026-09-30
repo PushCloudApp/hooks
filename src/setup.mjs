@@ -12,10 +12,9 @@
 // week of silence. Step 4 is what proves the loop end to end, and it is the
 // only part of the setup a user will remember.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { spawnSync } from "node:child_process";
 import { loadConfig, saveConfig, DEFAULT_CONFIG_PATH } from "./config.mjs";
@@ -23,8 +22,8 @@ import { AGENTS, agentById } from "./agents.mjs";
 import { api, askQuestion, waitForAnswer } from "./api.mjs";
 import { parseKey } from "./seal.mjs";
 import { binDir, installBin, hookCommand, onPath } from "./install.mjs";
-
-const SKILL = fileURLToPath(new URL("../skills/pushcloud/SKILL.md", import.meta.url));
+import { readSettings, writeSettings, installSkill, skillPath } from "./settings.mjs";
+import { runPair } from "./pair.mjs";
 
 const say = (s = "") => process.stdout.write(`${s}\n`);
 const bold = (s) => (process.stdout.isTTY ? `[1m${s}[0m` : s);
@@ -55,33 +54,6 @@ export function detectAgents(home = homedir()) {
     const config = a.config(home);
     return { agent: a, config, present: existsSync(dirname(config)) };
   });
-}
-
-/// Reads a settings file that may not exist, may be empty, or may be broken.
-///
-/// A parse failure stops the whole setup rather than being treated as an empty
-/// object: writing our hooks over a file we could not read would silently
-/// discard whatever the user had in there.
-function readSettings(path) {
-  if (!existsSync(path)) return {};
-  const raw = readFileSync(path, "utf8").trim();
-  if (!raw) return {};
-  try {
-    return JSON.parse(raw);
-  } catch (err) {
-    throw new Error(`${path} is not valid JSON (${err.message}). Fix or move it, then run setup again.`);
-  }
-}
-
-function writeSettings(path, settings) {
-  mkdirSync(dirname(path), { recursive: true });
-  // A backup before the first write, and only the first: the point is to keep
-  // the file as it was before this tool ever touched it, not to overwrite that
-  // record with our own output on the second run.
-  if (existsSync(path) && !existsSync(`${path}.pushcloud-backup`)) {
-    copyFileSync(path, `${path}.pushcloud-backup`);
-  }
-  writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
 }
 
 async function prompt(rl, question, existing) {
@@ -245,25 +217,6 @@ async function runSetup(args) {
   }
 }
 
-/// Copies the skill into the agent's skills directory.
-///
-/// Copied rather than symlinked: a symlink into a global npm package breaks the
-/// moment that package is updated or removed, and it would break silently - the
-/// agent would simply stop knowing when to ask.
-function installSkill(dir) {
-  const target = dir
-    ? resolve(dir, "pushcloud", "SKILL.md")
-    : join(homedir(), ".claude", "skills", "pushcloud", "SKILL.md");
-  try {
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(SKILL, target);
-    return target;
-  } catch {
-    // Not worth failing a setup over. The hooks are the part that has to work.
-    return null;
-  }
-}
-
 async function runRemove(args) {
   // Every agent, not just the ones detected: a config directory that has since
   // been deleted can still hold our hooks, and an uninstall that leaves some
@@ -276,9 +229,7 @@ async function runRemove(args) {
     writeSettings(path, d.agent.uninstall(readSettings(path)));
     say(`Removed the PushCloud hooks from ${path}`);
   }
-  const skill = args["skills-dir"]
-    ? resolve(args["skills-dir"], "pushcloud", "SKILL.md")
-    : join(homedir(), ".claude", "skills", "pushcloud", "SKILL.md");
+  const skill = skillPath(args["skills-dir"]);
   if (existsSync(skill)) {
     rmSync(dirname(skill), { recursive: true, force: true });
     say(`Removed the skill from ${dirname(skill)}`);
@@ -313,7 +264,9 @@ const command = args._[0] ?? "setup";
 
 try {
   if (args.help || command === "help") {
-    say("usage: pushcloud <setup|remove|test> [options]");
+    say("usage: pushcloud <pair|setup|remove|test> [options]");
+    say();
+    say("  pair <code>              connect this machine with the code from your phone");
     say();
     say("  --token pca_...          application token, instead of being asked");
     say("  --key pck_...            API key with the read scope");
@@ -325,6 +278,11 @@ try {
     say("  --skills-dir PATH        where to write the skill (default: ~/.claude/skills)");
     say("  --e2ee-key HEX           encrypt commands before they leave the machine");
     say("  --no-test                skip the test question at the end");
+  } else if (command === "pair") {
+    // Ctrl-C while waiting for the phone stops cleanly: nothing has been written yet.
+    const stop = new AbortController();
+    process.once("SIGINT", () => stop.abort());
+    process.exitCode = await runPair(args, { say, signal: stop.signal });
   } else if (command === "setup") {
     await runSetup(args);
   } else if (command === "remove" || command === "uninstall") {
