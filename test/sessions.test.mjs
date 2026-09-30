@@ -109,7 +109,7 @@ describe("SessionStart", () => {
   });
 });
 
-describe("Notification and Stop", () => {
+describe("the turn and session-end events", () => {
   const seed = (home, map) => {
     mkdirSync(join(home, ".pushcloud"), { recursive: true });
     writeFileSync(cachePath(home), JSON.stringify(map));
@@ -130,18 +130,78 @@ describe("Notification and Stop", () => {
     assert.deepEqual(cacheOf(home), { "cc-abc123": "ses_1" });
   });
 
-  test("Stop PATCHes done and drops the cache entry", async () => {
+  test("Stop PATCHes waiting and keeps the session (it fires every turn)", async () => {
     const home = tmpHome();
     seed(home, { "cc-other": "ses_0", "cc-abc123": "ses_1" });
     const api = await fakeApi();
     const r = await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
     api.close();
     assert.equal(r.code, 0);
-    assert.equal(api.seen.length, 1);
-    assert.equal(api.seen[0].method, "PATCH");
-    assert.equal(api.seen[0].path, "/v1/sessions/ses_1");
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1"]);
+    assert.deepEqual(api.seen[0].body, { status: "waiting" });
+    assert.deepEqual(cacheOf(home), { "cc-other": "ses_0", "cc-abc123": "ses_1" });
+  });
+
+  test("UserPromptSubmit PATCHes the session back to working", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-abc123": "ses_1" });
+    const api = await fakeApi();
+    const r = await runEvent("user-prompt-submit", { ...START, hook_event_name: "UserPromptSubmit", prompt: "go" }, { home, origin: api.origin });
+    api.close();
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1"]);
+    assert.deepEqual(api.seen[0].body, { status: "working" });
+  });
+
+  test("SessionEnd PATCHes done and drops the cache entry", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-other": "ses_0", "cc-abc123": "ses_1" });
+    const api = await fakeApi();
+    const r = await runEvent("session-end", { ...START, hook_event_name: "SessionEnd", reason: "exit" }, { home, origin: api.origin });
+    api.close();
+    assert.equal(r.code, 0);
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1"]);
     assert.deepEqual(api.seen[0].body, { status: "done" });
     assert.deepEqual(cacheOf(home), { "cc-other": "ses_0" });
+  });
+
+  test("SessionEnd with no cached session sends nothing (no session opened just to end it)", async () => {
+    const home = tmpHome();
+    const api = await fakeApi();
+    const r = await runEvent("session-end", { ...START, hook_event_name: "SessionEnd" }, { home, origin: api.origin });
+    api.close();
+    assert.equal(r.code, 0);
+    assert.equal(api.seen.length, 0);
+  });
+
+  test("a three-turn session is one PushCloud session: one POST, no done until SessionEnd", async () => {
+    const home = tmpHome();
+    const api = await fakeApi({ sesId: "ses_one" });
+    const opts = { home, origin: api.origin };
+    await runEvent("session-start", START, opts);
+    for (let turn = 0; turn < 3; turn++) {
+      await runEvent("user-prompt-submit", { ...START, hook_event_name: "UserPromptSubmit" }, opts);
+      await runEvent("stop", { ...START, hook_event_name: "Stop" }, opts);
+    }
+    await runEvent("session-end", { ...START, hook_event_name: "SessionEnd" }, opts);
+    api.close();
+    const posts = api.seen.filter((s) => s.method === "POST");
+    assert.equal(posts.length, 1, JSON.stringify(api.seen));
+    assert.equal(posts[0].path, "/v1/sessions");
+    const statuses = api.seen.filter((s) => s.method === "PATCH").map((s) => s.body.status);
+    assert.deepEqual(statuses, ["working", "waiting", "working", "waiting", "working", "waiting", "done"]);
+  });
+
+  test("Stop falls back to one plain push when the session can't be reported", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-abc123": "ses_1" });
+    const api = await fakeApi({ status: (req) => (req.url.startsWith("/v1/sessions") ? 500 : 0) });
+    const r = await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
+    api.close();
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1", "POST /v1/messages"]);
   });
 
   test("a cache miss re-POSTs with the same external_id, then PATCHes", async () => {
@@ -156,21 +216,25 @@ describe("Notification and Stop", () => {
     assert.deepEqual(cacheOf(home), { "cc-abc123": "ses_replayed" });
   });
 
-  test("a 409 SESSION_ENDED is ignored", async () => {
+  test("a 409 SESSION_ENDED (dismissed on the phone) is quiet, and the session stays dismissed", async () => {
     const home = tmpHome();
     seed(home, { "cc-abc123": "ses_1" });
     const api = await fakeApi({ status: 409 });
     const r = await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
-    api.close();
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
     assert.equal(r.err, "");
-    assert.deepEqual(cacheOf(home), {});
+    // No fallback push for a session the person dismissed, and no new session on
+    // the next turn either.
+    await runEvent("user-prompt-submit", { ...START, hook_event_name: "UserPromptSubmit" }, { home, origin: api.origin });
+    await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
+    api.close();
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1"]);
   });
 });
 
 describe("fails open", () => {
-  for (const event of ["session-start", "notification", "stop"]) {
+  for (const event of ["session-start", "user-prompt-submit", "notification", "stop", "session-end"]) {
     test(`${event}: a 500 exits 0, silently`, async () => {
       const home = tmpHome();
       const api = await fakeApi({ status: 500 });

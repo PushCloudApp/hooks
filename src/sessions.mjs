@@ -1,8 +1,16 @@
 // Claude Code's own session lifecycle, reported to PushCloud sessions.
 //
-// Three hooks, one each for SessionStart, Notification and Stop. They open a
-// session, mark it waiting when Claude wants attention, and mark it done when a
-// run stops, so the phone's Agents tab shows what each terminal is doing.
+// Five hooks. SessionStart opens a session; UserPromptSubmit marks it working;
+// Notification and Stop mark it waiting (Claude wants attention, or a turn has
+// ended and the prompt is yours); SessionEnd marks it done. So the phone's
+// Agents tab shows what each terminal is doing, and one terminal is one session.
+//
+// Stop fires at the end of every turn, not once per session, which is why it is
+// `waiting` and only SessionEnd is `done`: the server replays an external_id only
+// while its session is open, so a done-per-turn would start a new session (and
+// spend a session start) every turn. Stop's waiting ring is also the turn-end
+// push, so `install` no longer puts a separate `notify` beside it; if the session
+// can't be reported, Stop sends that one plain push itself.
 //
 // Unlike the PreToolUse hook, nothing here decides anything. So every failure is
 // swallowed: a session hook that threw, printed or hung would get in the way of
@@ -22,6 +30,11 @@ export const MAX_CACHED = 200;
 export const REQUEST_TIMEOUT_MS = 3000;
 
 const MAX_TITLE = 200;
+
+/// Cached in place of a session id once the person has dismissed that session
+/// on the phone (a 409): the rest of that Claude Code session stays quiet rather
+/// than opening a fresh one on the next turn. A SessionStart (a resume) clears it.
+const DISMISSED = "-";
 
 export function sessionsPath(home = homedir()) {
   return join(home, ".pushcloud", "sessions.json");
@@ -118,28 +131,62 @@ export async function onSessionStart(cfg, hookInput) {
   return session.id;
 }
 
-async function setStatus(cfg, hookInput, status) {
-  if (!usable(cfg, hookInput)) return;
+/// PATCHes the session's status, opening (or replaying) it first on a cache miss
+/// unless `openIfMissing` is false. Returns true once the status is reported,
+/// false when there was nothing to report to (dismissed, or no session). Throws
+/// on anything else, so the caller can fall back.
+async function setStatus(cfg, hookInput, status, { openIfMissing = true } = {}) {
+  if (!usable(cfg, hookInput)) return false;
   const externalId = externalIdOf(hookInput);
   const path = cacheFile(cfg);
-  const id = readCache(path)[externalId] ?? (await onSessionStart(cfg, hookInput));
-  if (!id) return;
+  const cached = readCache(path)[externalId];
+  if (cached === DISMISSED) return false;
+  const id = cached ?? (openIfMissing ? await onSessionStart(cfg, hookInput) : null);
+  if (!id) return false;
   try {
     await call(cfg, "PATCH", `/v1/sessions/${encodeURIComponent(id)}`, { status });
   } catch (err) {
-    // The session already ended (dismissed on the phone, or gone stale). Nothing
-    // to report to; forget it so the next event starts clean.
-    if (err.status === 409) return forget(path, externalId);
+    // The session already ended (dismissed on the phone, or gone stale). Remember
+    // that, so the next turn doesn't open a new one the person never asked for.
+    if (err.status === 409) {
+      if (status === "done") forget(path, externalId);
+      else remember(path, externalId, DISMISSED);
+      return false;
+    }
     throw err;
   }
   if (status === "done") forget(path, externalId);
+  return true;
 }
 
+export const onUserPromptSubmit = (cfg, hookInput) => setStatus(cfg, hookInput, "working");
 export const onNotification = (cfg, hookInput) => setStatus(cfg, hookInput, "waiting");
-export const onStop = (cfg, hookInput) => setStatus(cfg, hookInput, "done");
+
+/// The end of a turn. Its waiting ring is the turn's one push; when the session
+/// can't be reported at all (no sessions on the plan, the server erroring), one
+/// plain message goes instead, so a turn's end is never silent. `sendNote` is
+/// passed in to keep this module free of the message API.
+export async function onStop(cfg, hookInput, { sendNote } = {}) {
+  try {
+    await setStatus(cfg, hookInput, "waiting");
+  } catch (err) {
+    if (!sendNote || !cfg?.token || !cfg?.api) throw err;
+    const project = projectOf(hookInput);
+    await sendNote(cfg, {
+      title: project ? `Claude Code in ${project}` : "Claude Code",
+      message: "Your turn: Claude has finished.",
+    });
+  }
+}
+
+/// The terminal closed (or /clear, or logout). Never opens a session just to end
+/// it: with nothing cached there is nothing on the phone to close.
+export const onSessionEnd = (cfg, hookInput) => setStatus(cfg, hookInput, "done", { openIfMissing: false });
 
 export const SESSION_EVENTS = {
   "session-start": onSessionStart,
+  "user-prompt-submit": onUserPromptSubmit,
   notification: onNotification,
   stop: onStop,
+  "session-end": onSessionEnd,
 };

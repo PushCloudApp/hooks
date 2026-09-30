@@ -6,11 +6,14 @@
 //   ask     a PreToolUse hook. Pushes the tool call to your phone with Approve,
 //           Deny and a reply box, blocks until you answer, and prints the
 //           verdict back to Claude Code.
-//   notify  a Stop / Notification hook. Pushes a line and exits; nothing waits.
+//   notify  pushes a line and exits; nothing waits. Kept for hand-written
+//           configs; `setup` no longer installs it for Claude Code, whose Stop
+//           push now comes from the session hook below.
 //
-// And, with `--event session-start|notification|stop`, the Claude Code session
-// hooks that report to PushCloud sessions (see sessions.mjs). Those always exit
-// 0 and print nothing, within SESSION_DEADLINE_MS, whatever happens.
+// And, with `--event session-start|user-prompt-submit|notification|stop|
+// session-end`, the Claude Code session hooks that report to PushCloud sessions
+// (see sessions.mjs). Those always exit 0 and print nothing, within
+// SESSION_DEADLINE_MS, whatever happens.
 //
 // Both read the hook payload as JSON on stdin, which is how Claude Code passes
 // the tool call, the session and the working directory.
@@ -146,7 +149,7 @@ async function sessionEvent(name) {
     const handler = SESSION_EVENTS[name];
     if (handler) {
       const payload = await readStdin();
-      await handler(loadConfig(), payload);
+      await handler(loadConfig(), payload, { sendNote });
     }
   } catch {
     // Deliberately ignored: a session hook must never get in the agent's way.
@@ -160,6 +163,6 @@ if (mode === "--event") await sessionEvent(process.argv[3]);
 else if (mode === "ask") await ask();
 else if (mode === "notify") await notify();
 else {
-  process.stderr.write("usage: pushcloud-hook.mjs <ask|notify> | --event <session-start|notification|stop>\n");
+  process.stderr.write("usage: pushcloud-hook.mjs <ask|notify> | --event <session-start|user-prompt-submit|notification|stop|session-end>\n");
   process.exit(2);
 }

@@ -83,15 +83,17 @@ const CLAUDE = {
         },
       ],
     });
-    // Session hooks (Area 1 sessions): open on SessionStart, waiting on
-    // Notification, done on Stop. Stop shares one group with the notify push so
-    // a re-run replaces both rather than stacking either.
+    // Session hooks (Area 1 sessions): open on SessionStart, working on each
+    // prompt, waiting on Notification and at each turn's end (Stop fires every
+    // turn), done on SessionEnd. Stop's waiting ring is the turn-end push, so no
+    // `notify` sits beside it (it would buzz the phone twice); putNested's
+    // filter replaces an older install's notify group.
     const session = (name) => ({ type: "command", command: `${command} --event ${name}`, timeout: SESSION_HOOK_TIMEOUT });
     hooks = putNested(hooks, "SessionStart", { hooks: [session("session-start")] });
+    hooks = putNested(hooks, "UserPromptSubmit", { hooks: [session("user-prompt-submit")] });
     hooks = putNested(hooks, "Notification", { hooks: [session("notification")] });
-    hooks = putNested(hooks, "Stop", {
-      hooks: [{ type: "command", command: `${command} notify --agent claude` }, session("stop")],
-    });
+    hooks = putNested(hooks, "Stop", { hooks: [session("stop")] });
+    hooks = putNested(hooks, "SessionEnd", { hooks: [session("session-end")] });
     next.hooks = hooks;
     return next;
   },

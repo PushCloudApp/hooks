@@ -23,7 +23,7 @@ describe("mergeHooks", () => {
     assert.equal(out.hooks.PreToolUse.length, 1);
     assert.equal(out.hooks.PreToolUse[0].matcher, "Bash");
     assert.match(out.hooks.PreToolUse[0].hooks[0].command, /pushcloud-hook\.mjs ask --agent claude$/);
-    assert.match(out.hooks.Stop[0].hooks[0].command, /pushcloud-hook\.mjs notify --agent claude$/);
+    assert.match(out.hooks.Stop[0].hooks[0].command, /pushcloud-hook\.mjs --event stop$/);
   });
 
   test("the PreToolUse timeout exceeds the hook's own wait", () => {
@@ -221,10 +221,16 @@ describe("Gemini CLI", () => {
 
 describe("Claude Code session hooks", () => {
   const opts = { command: 'node "/h/.pushcloud/bin/pushcloud-hook.mjs"', waitSeconds: 120 };
-  const EVENTS = { SessionStart: "session-start", Notification: "notification", Stop: "stop" };
+  const EVENTS = {
+    SessionStart: "session-start",
+    UserPromptSubmit: "user-prompt-submit",
+    Notification: "notification",
+    Stop: "stop",
+    SessionEnd: "session-end",
+  };
   const commandsFor = (hooks, event) => (hooks[event] ?? []).flatMap((g) => g.hooks.map((h) => h.command));
 
-  test("install adds SessionStart, Notification and Stop entries pointing at --event <name>", () => {
+  test("install adds SessionStart, UserPromptSubmit, Notification, Stop and SessionEnd entries pointing at --event <name>", () => {
     const { hooks } = claude.install({}, opts);
     for (const [event, name] of Object.entries(EVENTS)) {
       const cmds = commandsFor(hooks, event);
@@ -242,9 +248,17 @@ describe("Claude Code session hooks", () => {
     }
   });
 
-  test("the notify Stop hook is still installed alongside the session one", () => {
+  test("Stop runs one hook, so a turn's end buzzes the phone once", () => {
+    // The session hook's waiting ring is the turn-end push; a notify alongside
+    // it would be a second one for the same moment.
     const cmds = commandsFor(claude.install({}, opts).hooks, "Stop");
-    assert.ok(cmds.some((c) => c.endsWith("notify --agent claude")), JSON.stringify(cmds));
+    assert.deepEqual(cmds, [`${opts.command} --event stop`]);
+  });
+
+  test("a re-run replaces an older install's notify Stop hook", () => {
+    const old = { hooks: { Stop: [{ hooks: [{ type: "command", command: `${opts.command} notify --agent claude` }] }] } };
+    const cmds = commandsFor(claude.install(old, opts).hooks, "Stop");
+    assert.deepEqual(cmds, [`${opts.command} --event stop`]);
   });
 
   test("session hooks carry a short timeout", () => {
