@@ -2,12 +2,22 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SETUP = fileURLToPath(new URL("../src/setup.mjs", import.meta.url));
+const PACKAGE = fileURLToPath(new URL("../", import.meta.url));
+
+/// A home directory with a ~/.claude in it, so Claude Code is detected, and
+/// nothing a test does can reach the real one.
+function tempHome() {
+  const home = mkdtempSync(join(tmpdir(), "pushcloud-home-"));
+  mkdirSync(join(home, ".claude"));
+  return home;
+}
+const sharedHome = tempHome();
 
 let api;
 let seen = [];
@@ -52,7 +62,7 @@ after(() => api.close());
 function run(args, env = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [SETUP, ...args], {
-      env: { ...process.env, PUSHCLOUD_API: api.origin, ...env },
+      env: { ...process.env, HOME: sharedHome, PUSHCLOUD_API: api.origin, ...env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
@@ -93,7 +103,7 @@ describe("pushcloud setup", () => {
     assert.equal(config.key, "pck_good");
 
     const settings = JSON.parse(readFileSync(w.settings, "utf8"));
-    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /pushcloud-hook\.mjs ask --agent claude$/);
+    assert.match(settings.hooks.PreToolUse[0].hooks[0].command, /pushcloud-hook\.mjs" ask --agent claude$/);
 
     // The test question is the point of the last step: a setup that writes
     // files and never proves a phone can answer is a setup that fails silently.
@@ -194,6 +204,52 @@ describe("pushcloud setup", () => {
     const { code } = await run(["remove", "--claude-settings", w.settings]);
     assert.equal(code, 0);
     assert.deepEqual(JSON.parse(readFileSync(w.settings, "utf8")), { model: "opus" });
+  });
+
+  test("the hook command points at ~/.pushcloud/bin, never the npx cache", async () => {
+    const w = workspace();
+    const home = tempHome();
+    const { code, out, err } = await run(good(w, ["--no-test"]), { HOME: home });
+    assert.equal(code, 0, out + err);
+    const bin = join(home, ".pushcloud", "bin");
+    const settings = JSON.parse(readFileSync(w.settings, "utf8"));
+    const commands = [
+      ...settings.hooks.PreToolUse.flatMap((e) => e.hooks),
+      ...(settings.hooks.Stop ?? []).flatMap((e) => e.hooks),
+    ].map((h) => h.command);
+    assert.ok(commands.length > 0);
+    for (const c of commands) {
+      assert.ok(c.startsWith(`node "${join(bin, "pushcloud-hook.mjs")}"`), c);
+      assert.doesNotMatch(c, /_npx/);
+      assert.ok(!c.includes(PACKAGE), `${c} should not point into the package`);
+    }
+    assert.ok(existsSync(join(bin, "pushcloud-hook.mjs")));
+  });
+
+  test("remove deletes ~/.pushcloud/bin", async () => {
+    const w = workspace();
+    const home = tempHome();
+    await run(good(w, ["--no-test"]), { HOME: home });
+    assert.ok(existsSync(join(home, ".pushcloud", "bin")));
+    const { code } = await run(["remove", "--claude-settings", w.settings], { HOME: home });
+    assert.equal(code, 0);
+    assert.equal(existsSync(join(home, ".pushcloud", "bin")), false);
+  });
+
+  test("remove unregisters the MCP server when claude is on PATH", async () => {
+    const w = workspace();
+    const home = tempHome();
+    const stubs = mkdtempSync(join(tmpdir(), "pushcloud-stub-"));
+    const argvFile = join(stubs, "argv.txt");
+    writeFileSync(join(stubs, "claude"), `#!/bin/sh\necho "$@" >> "${argvFile}"\nexit 1\n`);
+    chmodSync(join(stubs, "claude"), 0o755);
+    const { code } = await run(["remove", "--claude-settings", w.settings], {
+      HOME: home,
+      PATH: `${stubs}${delimiter}${process.env.PATH}`,
+    });
+    // The stub exits 1: a failed unregister must not fail the uninstall.
+    assert.equal(code, 0);
+    assert.equal(readFileSync(argvFile, "utf8").trim(), "mcp remove pushcloud --scope user");
   });
 
   test("without a terminal it says so rather than hanging", async () => {

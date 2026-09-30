@@ -17,12 +17,13 @@ import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
+import { spawnSync } from "node:child_process";
 import { loadConfig, saveConfig, DEFAULT_CONFIG_PATH } from "./config.mjs";
 import { AGENTS, agentById } from "./agents.mjs";
 import { api, askQuestion, waitForAnswer } from "./api.mjs";
 import { parseKey } from "./seal.mjs";
+import { binDir, installBin, hookCommand, onPath } from "./install.mjs";
 
-const HOOK = fileURLToPath(new URL("./pushcloud-hook.mjs", import.meta.url));
 const SKILL = fileURLToPath(new URL("../skills/pushcloud/SKILL.md", import.meta.url));
 
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -186,10 +187,13 @@ async function runSetup(args) {
     d.agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : d.config;
 
   if (targets.length === 0) say("\nNo supported agent found on this machine. Nothing to wire up.");
+  // The hook runs from ~/.pushcloud/bin, not from this package: under npx the
+  // package sits in a cache npm prunes, which would break every hook at once.
+  if (targets.length > 0) installBin();
   for (const target of targets) {
     const path = pathFor(target);
     const written = target.agent.install(readSettings(path), {
-      command: `node ${HOOK}`,
+      command: hookCommand(),
       matcher: args.matcher ?? target.agent.defaultMatcher,
       waitSeconds: cfg.waitSeconds,
     });
@@ -278,6 +282,16 @@ async function runRemove(args) {
   if (existsSync(skill)) {
     rmSync(dirname(skill), { recursive: true, force: true });
     say(`Removed the skill from ${dirname(skill)}`);
+  }
+  const bin = binDir();
+  if (existsSync(bin)) {
+    rmSync(bin, { recursive: true, force: true });
+    say(`Removed the hook from ${bin}`);
+  }
+  // The MCP server a pairing registered. Best effort: it may never have been
+  // added, and a failure here must not leave the rest of the uninstall undone.
+  if (onPath("claude")) {
+    spawnSync("claude", ["mcp", "remove", "pushcloud", "--scope", "user"], { stdio: "ignore" });
   }
   say(dim(`Credentials are left at ${DEFAULT_CONFIG_PATH}; delete that file to finish.`));
 }

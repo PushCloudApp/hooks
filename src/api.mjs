@@ -50,13 +50,21 @@ export async function askQuestion(cfg, { title, message }) {
 
 /// Blocks on the server until the question is answered or `seconds` runs out.
 /// Returns the parsed answer, or null if nobody answered in time.
+///
+/// The application token is enough to wait on a question it asked, so a setup
+/// with no API key still works; the key is used when there is one. A question
+/// that expired with a declared default settles as that default, which is an
+/// answer, not silence.
 export async function waitForAnswer(cfg, interactionId, seconds) {
   const { interaction } = await api(
     cfg.api,
     `/v1/interactions/${interactionId}/wait?timeout=${seconds}`,
-    cfg.key
+    cfg.key ?? cfg.token
   );
-  if (interaction.status !== "responded") return null;
+  const settled =
+    interaction.status === "responded" ||
+    (interaction.status === "expired" && Boolean(interaction.default_applied));
+  if (!settled) return null;
   return JSON.parse(interaction.response ?? "{}");
 }
 
