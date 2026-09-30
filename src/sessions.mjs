@@ -32,7 +32,7 @@ export const REQUEST_TIMEOUT_MS = 3000;
 const MAX_TITLE = 200;
 
 /// Cached in place of a session id once the person has dismissed that session
-/// on the phone (a 409): the rest of that Claude Code session stays quiet rather
+/// on the phone (a 409 whose session reads `failed_reason: "dismissed"`): the rest of that Claude Code session stays quiet rather
 /// than opening a fresh one on the next turn. A SessionStart (a resume) clears it.
 const DISMISSED = "-";
 
@@ -131,6 +131,20 @@ export async function onSessionStart(cfg, hookInput) {
   return session.id;
 }
 
+/// Whether an ended session was dismissed by the person on the phone. The
+/// worker answers a dismissed session and one its 24 h stale sweep closed with
+/// the same 409 SESSION_ENDED, so only `failed_reason` tells them apart. When
+/// that can't be read, it counts as not dismissed: a stray new session is a
+/// smaller harm than a terminal that goes silent for the rest of its life.
+async function wasDismissed(cfg, id) {
+  try {
+    const json = await call(cfg, "GET", `/v1/sessions/${encodeURIComponent(id)}`);
+    return json?.session?.failed_reason === "dismissed";
+  } catch {
+    return false;
+  }
+}
+
 /// PATCHes the session's status, opening (or replaying) it first on a cache miss
 /// unless `openIfMissing` is false. Returns true once the status is reported,
 /// false when there was nothing to report to (dismissed, or no session). Throws
@@ -141,19 +155,31 @@ async function setStatus(cfg, hookInput, status, { openIfMissing = true } = {}) 
   const path = cacheFile(cfg);
   const cached = readCache(path)[externalId];
   if (cached === DISMISSED) return false;
-  const id = cached ?? (openIfMissing ? await onSessionStart(cfg, hookInput) : null);
+  let id = cached ?? (openIfMissing ? await onSessionStart(cfg, hookInput) : null);
   if (!id) return false;
-  try {
-    await call(cfg, "PATCH", `/v1/sessions/${encodeURIComponent(id)}`, { status });
-  } catch (err) {
-    // The session already ended (dismissed on the phone, or gone stale). Remember
-    // that, so the next turn doesn't open a new one the person never asked for.
-    if (err.status === 409) {
-      if (status === "done") forget(path, externalId);
-      else remember(path, externalId, DISMISSED);
-      return false;
+  // At most one retry: a cached session that ended some other way than a dismiss
+  // (the stale sweep, or done) is forgotten and a fresh one opened in its place.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await call(cfg, "PATCH", `/v1/sessions/${encodeURIComponent(id)}`, { status });
+      break;
+    } catch (err) {
+      if (err.status !== 409) throw err;
+      if (status === "done") {
+        forget(path, externalId);
+        return false;
+      }
+      // Dismissed on the phone: remember that, so the next turn doesn't open a
+      // new session the person never asked for.
+      if (await wasDismissed(cfg, id)) {
+        remember(path, externalId, DISMISSED);
+        return false;
+      }
+      forget(path, externalId);
+      if (attempt > 0 || !openIfMissing) return false;
+      id = await onSessionStart(cfg, hookInput);
+      if (!id) return false;
     }
-    throw err;
   }
   if (status === "done") forget(path, externalId);
   return true;

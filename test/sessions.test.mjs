@@ -23,6 +23,11 @@ async function fakeApi(plan = {}) {
     });
     seen.push({ method: req.method, path: req.url, auth: req.headers.authorization, body: raw ? JSON.parse(raw) : null });
     if (plan.hang) return; // never answers
+    if (req.method === "GET" && plan.failedReason !== undefined) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const id = req.url.split("/").pop();
+      return res.end(JSON.stringify({ session: { id, status: "failed", failed_reason: plan.failedReason, steps: [] } }));
+    }
     const status = typeof plan.status === "function" ? plan.status(req) : plan.status;
     if (status && status >= 400) {
       res.writeHead(status, { "Content-Type": "application/json" });
@@ -219,7 +224,7 @@ describe("the turn and session-end events", () => {
   test("a 409 SESSION_ENDED (dismissed on the phone) is quiet, and the session stays dismissed", async () => {
     const home = tmpHome();
     seed(home, { "cc-abc123": "ses_1" });
-    const api = await fakeApi({ status: 409 });
+    const api = await fakeApi({ status: (req) => (req.method === "PATCH" ? 409 : 0), failedReason: "dismissed" });
     const r = await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
     assert.equal(r.code, 0);
     assert.equal(r.out, "");
@@ -229,7 +234,42 @@ describe("the turn and session-end events", () => {
     await runEvent("user-prompt-submit", { ...START, hook_event_name: "UserPromptSubmit" }, { home, origin: api.origin });
     await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
     api.close();
-    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1"]);
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), ["PATCH /v1/sessions/ses_1", "GET /v1/sessions/ses_1"]);
+  });
+
+  test("a 409 on a session swept as stale (idle > 24 h) opens a fresh one rather than going silent", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-abc123": "ses_1" });
+    const api = await fakeApi({
+      status: (req) => (req.method === "PATCH" && req.url.endsWith("/ses_1") ? 409 : 0),
+      failedReason: "stale",
+      sesId: "ses_2",
+    });
+    const r = await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
+    assert.equal(r.code, 0);
+    assert.equal(r.out, "");
+    await runEvent("stop", { ...START, hook_event_name: "Stop" }, { home, origin: api.origin });
+    api.close();
+    assert.deepEqual(api.seen.map((s) => `${s.method} ${s.path}`), [
+      "PATCH /v1/sessions/ses_1",
+      "GET /v1/sessions/ses_1",
+      "POST /v1/sessions",
+      "PATCH /v1/sessions/ses_2",
+      "PATCH /v1/sessions/ses_2",
+    ]);
+    assert.equal(api.seen[2].body.external_id, "cc-abc123");
+    assert.deepEqual(cacheOf(home), { "cc-abc123": "ses_2" });
+  });
+
+  test("session-end on a stale-swept session forgets it without reopening", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-abc123": "ses_1" });
+    const api = await fakeApi({ status: (req) => (req.method === "PATCH" ? 409 : 0), failedReason: "stale" });
+    const r = await runEvent("session-end", { ...START, hook_event_name: "SessionEnd" }, { home, origin: api.origin });
+    api.close();
+    assert.equal(r.code, 0);
+    assert.ok(!api.seen.some((s) => s.method === "POST"), "never opens a session just to end it");
+    assert.deepEqual(cacheOf(home), {});
   });
 });
 
