@@ -32,8 +32,9 @@ export const REQUEST_TIMEOUT_MS = 3000;
 const MAX_TITLE = 200;
 
 /// Cached in place of a session id once the person has dismissed that session
-/// on the phone (a 409 whose session reads `failed_reason: "dismissed"`): the rest of that Claude Code session stays quiet rather
-/// than opening a fresh one on the next turn. A SessionStart (a resume) clears it.
+/// on the phone (a 409 whose session reads `failed_reason: "dismissed"`): the
+/// rest of that Claude Code session stays quiet rather than opening a fresh one
+/// on the next turn. A SessionStart (a resume) clears it.
 const DISMISSED = "-";
 
 export function sessionsPath(home = homedir()) {
