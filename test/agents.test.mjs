@@ -218,3 +218,54 @@ describe("Gemini CLI", () => {
     assert.match(gemini.why, /deny|block/);
   });
 });
+
+describe("Claude Code session hooks", () => {
+  const opts = { command: 'node "/h/.pushcloud/bin/pushcloud-hook.mjs"', waitSeconds: 120 };
+  const EVENTS = { SessionStart: "session-start", Notification: "notification", Stop: "stop" };
+  const commandsFor = (hooks, event) => (hooks[event] ?? []).flatMap((g) => g.hooks.map((h) => h.command));
+
+  test("install adds SessionStart, Notification and Stop entries pointing at --event <name>", () => {
+    const { hooks } = claude.install({}, opts);
+    for (const [event, name] of Object.entries(EVENTS)) {
+      const cmds = commandsFor(hooks, event);
+      assert.ok(cmds.includes(`${opts.command} --event ${name}`), `${event}: ${JSON.stringify(cmds)}`);
+    }
+  });
+
+  test("each entry appears once, however often install runs", () => {
+    const once = claude.install({}, opts);
+    const thrice = claude.install(claude.install(once, opts), opts);
+    assert.deepEqual(thrice, once);
+    for (const [event, name] of Object.entries(EVENTS)) {
+      const hits = commandsFor(thrice.hooks, event).filter((c) => c.endsWith(`--event ${name}`));
+      assert.equal(hits.length, 1, event);
+    }
+  });
+
+  test("the notify Stop hook is still installed alongside the session one", () => {
+    const cmds = commandsFor(claude.install({}, opts).hooks, "Stop");
+    assert.ok(cmds.some((c) => c.endsWith("notify --agent claude")), JSON.stringify(cmds));
+  });
+
+  test("session hooks carry a short timeout", () => {
+    const { hooks } = claude.install({}, opts);
+    for (const event of Object.keys(EVENTS)) {
+      for (const g of hooks[event]) {
+        for (const h of g.hooks.filter((x) => x.command.includes("--event"))) {
+          assert.ok(h.timeout > 0 && h.timeout <= 10, `${event} timeout ${h.timeout}`);
+        }
+      }
+    }
+  });
+
+  test("uninstall removes only ours, leaving a user's own Stop hook in place", () => {
+    const theirStop = { hooks: [{ type: "command", command: "say done" }] };
+    const theirStart = { matcher: "startup", hooks: [{ type: "command", command: "echo hello" }] };
+    const before = { hooks: { Stop: [theirStop], SessionStart: [theirStart] } };
+    const installed = claude.install(before, opts);
+    assert.deepEqual(installed.hooks.Stop[0], theirStop);
+    const out = claude.uninstall(installed);
+    assert.deepEqual(out, before);
+    assert.equal("Notification" in out.hooks, false);
+  });
+});

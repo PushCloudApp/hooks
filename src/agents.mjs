@@ -42,6 +42,10 @@ function stripNested(hooks) {
   return next;
 }
 
+/// Seconds Claude Code allows a session hook. The hook gives up at 3 s on its
+/// own; this is only the backstop.
+const SESSION_HOOK_TIMEOUT = 5;
+
 const CLAUDE = {
   id: "claude",
   name: "Claude Code",
@@ -79,8 +83,14 @@ const CLAUDE = {
         },
       ],
     });
+    // Session hooks (Area 1 sessions): open on SessionStart, waiting on
+    // Notification, done on Stop. Stop shares one group with the notify push so
+    // a re-run replaces both rather than stacking either.
+    const session = (name) => ({ type: "command", command: `${command} --event ${name}`, timeout: SESSION_HOOK_TIMEOUT });
+    hooks = putNested(hooks, "SessionStart", { hooks: [session("session-start")] });
+    hooks = putNested(hooks, "Notification", { hooks: [session("notification")] });
     hooks = putNested(hooks, "Stop", {
-      hooks: [{ type: "command", command: `${command} notify --agent claude` }],
+      hooks: [{ type: "command", command: `${command} notify --agent claude` }, session("stop")],
     });
     next.hooks = hooks;
     return next;

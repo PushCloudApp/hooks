@@ -8,6 +8,10 @@
 //           verdict back to Claude Code.
 //   notify  a Stop / Notification hook. Pushes a line and exits; nothing waits.
 //
+// And, with `--event session-start|notification|stop`, the Claude Code session
+// hooks that report to PushCloud sessions (see sessions.mjs). Those always exit
+// 0 and print nothing, within SESSION_DEADLINE_MS, whatever happens.
+//
 // Both read the hook payload as JSON on stdin, which is how Claude Code passes
 // the tool call, the session and the working directory.
 //
@@ -18,6 +22,11 @@
 import { loadConfig } from "./config.mjs";
 import { askQuestion, waitForAnswer, sendNote } from "./api.mjs";
 import { agentById } from "./agents.mjs";
+import { SESSION_EVENTS } from "./sessions.mjs";
+
+/// A session hook's hard limit. Claude Code waits on SessionStart before the
+/// session begins, so this is time the person spends staring at a terminal.
+const SESSION_DEADLINE_MS = 3000;
 
 /// Which agent invoked us, and therefore which dialect to answer in. `setup`
 /// writes the flag; the default keeps a hand-written Claude Code config working.
@@ -130,10 +139,27 @@ async function notify() {
   }
 }
 
+/// Fails open, always: no output, exit 0, on success, error or timeout alike.
+async function sessionEvent(name) {
+  const deadline = setTimeout(() => process.exit(0), SESSION_DEADLINE_MS);
+  try {
+    const handler = SESSION_EVENTS[name];
+    if (handler) {
+      const payload = await readStdin();
+      await handler(loadConfig(), payload);
+    }
+  } catch {
+    // Deliberately ignored: a session hook must never get in the agent's way.
+  }
+  clearTimeout(deadline);
+  process.exit(0);
+}
+
 const mode = process.argv[2];
-if (mode === "ask") await ask();
+if (mode === "--event") await sessionEvent(process.argv[3]);
+else if (mode === "ask") await ask();
 else if (mode === "notify") await notify();
 else {
-  process.stderr.write("usage: pushcloud-hook.mjs <ask|notify>\n");
+  process.stderr.write("usage: pushcloud-hook.mjs <ask|notify> | --event <session-start|notification|stop>\n");
   process.exit(2);
 }

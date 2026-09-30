@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 /// The hook, and everything it imports, transitively. A module missing here is
 /// a hook that fails on its first import, so the test compares this list with
 /// the real files.
-export const BIN_FILES = ["pushcloud-hook.mjs", "api.mjs", "config.mjs", "seal.mjs", "agents.mjs"];
+export const BIN_FILES = ["pushcloud-hook.mjs", "api.mjs", "config.mjs", "seal.mjs", "agents.mjs", "sessions.mjs"];
 
 const SRC = fileURLToPath(new URL("./", import.meta.url));
 

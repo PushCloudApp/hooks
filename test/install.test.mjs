@@ -13,14 +13,14 @@ const tmpHome = () => mkdtempSync(join(tmpdir(), "pushcloud-home-"));
 
 describe("installBin", () => {
   test("ships the hook and every module it imports", () => {
-    assert.deepEqual(BIN_FILES, ["pushcloud-hook.mjs", "api.mjs", "config.mjs", "seal.mjs", "agents.mjs"]);
+    assert.deepEqual(BIN_FILES, ["pushcloud-hook.mjs", "api.mjs", "config.mjs", "seal.mjs", "agents.mjs", "sessions.mjs"]);
   });
 
   test("binDir is ~/.pushcloud/bin", () => {
     assert.equal(binDir("/h"), join("/h", ".pushcloud", "bin"));
   });
 
-  test("writes all five files and returns the hook path", () => {
+  test("writes every file and returns the hook path", () => {
     const home = tmpHome();
     const hook = installBin(home);
     assert.equal(hook, join(home, ".pushcloud", "bin", "pushcloud-hook.mjs"));
