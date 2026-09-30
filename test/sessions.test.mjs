@@ -96,6 +96,14 @@ describe("SessionStart", () => {
     assert.equal(statSync(cachePath(home)).mode & 0o777, 0o600);
   });
 
+  test("project is clipped to 80 characters", async () => {
+    const home = tmpHome();
+    const api = await fakeApi({});
+    await runEvent("session-start", { ...START, cwd: `/work/${"p".repeat(120)}` }, { home, origin: api.origin });
+    api.close();
+    assert.equal(api.seen[0].body.project, "p".repeat(80));
+  });
+
   test("a prompt, when present, is the title, clipped to 200 characters", async () => {
     const home = tmpHome();
     const api = await fakeApi();
@@ -219,6 +227,22 @@ describe("the turn and session-end events", () => {
     assert.equal(api.seen[0].body.external_id, "cc-abc123");
     assert.deepEqual(api.seen[1].body, { status: "waiting" });
     assert.deepEqual(cacheOf(home), { "cc-abc123": "ses_replayed" });
+  });
+
+  test("a 409 with some other code is not an ended session: nothing tombstoned", async () => {
+    const home = tmpHome();
+    seed(home, { "cc-abc123": "ses_1" });
+    const server = createServer((req, res) => {
+      res.writeHead(409, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { code: "SOMETHING_ELSE", message: "x" } }));
+      req.resume();
+    });
+    await new Promise((r) => server.listen(0, r));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await runEvent("user-prompt-submit", { ...START, hook_event_name: "UserPromptSubmit" }, { home, origin });
+    server.closeAllConnections?.();
+    server.close();
+    assert.deepEqual(cacheOf(home), { "cc-abc123": "ses_1" });
   });
 
   test("a 409 SESSION_ENDED (dismissed on the phone) is quiet, and the session stays dismissed", async () => {

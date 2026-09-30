@@ -1,9 +1,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, readdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configureAgent, upsertCodexToml, mergeCursorMcp } from "../src/mcp-config.mjs";
+import { configureAgent, upsertCodexToml, mergeCursorMcp, removeCodexToml, removeCursorMcp, removeAgentMcp } from "../src/mcp-config.mjs";
 
 const fixture = (name) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
 
@@ -281,5 +281,83 @@ describe("configureAgent: Other", () => {
     assert.ok(text.includes(`Authorization: ${AUTH}`), text);
     assert.ok(text.includes("https://pushcloud.app/v1/messages"), text);
     assert.ok(text.includes("Authorization: Bearer pca_paired"), text);
+  });
+});
+
+const mode = (p) => statSync(p).mode & 0o777;
+
+describe("the key never lands in a world-readable file", () => {
+  test("Codex config.toml and Cursor mcp.json are written 0600 when new", async () => {
+    const b = box([]);
+    await configureAgent("codex", { ...PAYLOAD, agent: "codex" }, { home: b.home, env: b.env, say: () => {}, run: recorder().run });
+    await configureAgent("cursor", { ...PAYLOAD, agent: "cursor" }, { home: b.home, env: b.env, say: () => {}, run: recorder().run });
+    assert.equal(mode(join(b.home, ".codex", "config.toml")), 0o600);
+    assert.equal(mode(join(b.home, ".cursor", "mcp.json")), 0o600);
+  });
+
+  test("an existing 0644 file is tightened; a stricter one is left alone", async () => {
+    const b = box([]);
+    mkdirSync(join(b.home, ".codex"));
+    mkdirSync(join(b.home, ".cursor"));
+    const toml = join(b.home, ".codex", "config.toml");
+    const mcp = join(b.home, ".cursor", "mcp.json");
+    writeFileSync(toml, 'model = "o3"\n');
+    chmodSync(toml, 0o644);
+    writeFileSync(mcp, "{}");
+    chmodSync(mcp, 0o400);
+    await configureAgent("codex", { ...PAYLOAD, agent: "codex" }, { home: b.home, env: b.env, say: () => {}, run: recorder().run });
+    await configureAgent("cursor", { ...PAYLOAD, agent: "cursor" }, { home: b.home, env: b.env, say: () => {}, run: recorder().run });
+    assert.equal(mode(toml), 0o600);
+    assert.equal(mode(mcp), 0o400);
+  });
+});
+
+describe("subprocesses are bounded", () => {
+  test("every claude/codex call carries a 10 s timeout", async () => {
+    const b = box(["claude", "codex"]);
+    const opts = [];
+    const run = (cmd, args, o) => (opts.push(o), { status: 0, stdout: "--url header", stderr: "" });
+    await configureAgent("claude-code", PAYLOAD, { home: b.home, env: b.env, say: () => {}, run });
+    await configureAgent("codex", { ...PAYLOAD, agent: "codex" }, { home: b.home, env: b.env, say: () => {}, run });
+    assert.ok(opts.length >= 4);
+    assert.ok(opts.every((o) => o.timeout === 10_000));
+  });
+});
+
+describe("removing", () => {
+  test("removeCodexToml drops our table and keeps the rest", () => {
+    const added = upsertCodexToml('model = "o3"\n\n[mcp_servers.other]\nurl = "x"\n', { url: URL_, authorization: AUTH });
+    const out = removeCodexToml(added);
+    assert.doesNotMatch(out, /pushcloud|pcm_/);
+    assert.match(out, /^model = "o3"$/m);
+    assert.match(out, /\[mcp_servers\.other\]/);
+    assert.equal(removeCodexToml(out), out);
+  });
+
+  test("removeCursorMcp drops only our server", () => {
+    const out = removeCursorMcp({ mcpServers: { pushcloud: { url: URL_ }, keep: { url: "y" } }, x: 1 });
+    assert.deepEqual(out, { mcpServers: { keep: { url: "y" } }, x: 1 });
+  });
+
+  test("removeAgentMcp cleans both files, and names what it did", () => {
+    const b = box([]);
+    mkdirSync(join(b.home, ".codex"));
+    mkdirSync(join(b.home, ".cursor"));
+    writeFileSync(join(b.home, ".codex", "config.toml"), upsertCodexToml('model = "o3"\n', { url: URL_, authorization: AUTH }));
+    writeFileSync(join(b.home, ".cursor", "mcp.json"), JSON.stringify(mergeCursorMcp({}, { url: URL_, headers: { Authorization: AUTH } })));
+    const s = sayer();
+    removeAgentMcp({ home: b.home, env: b.env, say: s.say, run: recorder().run });
+    assert.doesNotMatch(readFileSync(join(b.home, ".codex", "config.toml"), "utf8"), /pushcloud/);
+    assert.equal(JSON.parse(readFileSync(join(b.home, ".cursor", "mcp.json"), "utf8")).mcpServers.pushcloud, undefined);
+    assert.match(s.text(), /config\.toml/);
+    assert.match(s.text(), /mcp\.json/);
+  });
+
+  test("removeAgentMcp survives an unreadable cursor file", () => {
+    const b = box([]);
+    mkdirSync(join(b.home, ".cursor"));
+    writeFileSync(join(b.home, ".cursor", "mcp.json"), "{ nope");
+    removeAgentMcp({ home: b.home, env: b.env, say: () => {}, run: recorder().run });
+    assert.equal(readFileSync(join(b.home, ".cursor", "mcp.json"), "utf8"), "{ nope");
   });
 });

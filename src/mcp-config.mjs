@@ -11,7 +11,7 @@
 // settings file we cannot parse stops the pairing with the machine untouched.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, chmodSync, copyFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { agentById } from "./agents.mjs";
@@ -52,6 +52,25 @@ const COMMENT = /^\s*#/;
 /// header belongs to that table, not ours, so it stays. The new block goes at
 /// the end, which makes a second run a no-op.
 export function upsertCodexToml(text, { url, authorization }) {
+  const kept = stripCodexToml(text);
+  const block = [
+    `[mcp_servers.${NAME}]`,
+    `url = ${tomlString(url)}`,
+    `http_headers = { Authorization = ${tomlString(authorization)} }`,
+  ].join("\n");
+  return kept.length ? `${kept.join("\n")}\n\n${block}\n` : `${block}\n`;
+}
+
+/// Removes the pushcloud server from a Codex config.toml; returns the same text
+/// when there is none.
+export function removeCodexToml(text) {
+  if (!(text ?? "").split("\n").some((l) => OUR_HEADER.test(l))) return text ?? "";
+  const kept = stripCodexToml(text);
+  return kept.length ? `${kept.join("\n")}\n` : "";
+}
+
+/// The lines of `text` without our table, trailing blank lines trimmed.
+function stripCodexToml(text) {
   const lines = (text ?? "").split("\n");
   const kept = [];
   for (let i = 0; i < lines.length; ) {
@@ -70,12 +89,7 @@ export function upsertCodexToml(text, { url, authorization }) {
   }
   // Blank lines at the very end are only the gap before our old block.
   while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
-  const block = [
-    `[mcp_servers.${NAME}]`,
-    `url = ${tomlString(url)}`,
-    `http_headers = { Authorization = ${tomlString(authorization)} }`,
-  ].join("\n");
-  return kept.length ? `${kept.join("\n")}\n\n${block}\n` : `${block}\n`;
+  return kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +102,65 @@ export function mergeCursorMcp(json, { url, headers }) {
   const servers = next.mcpServers && typeof next.mcpServers === "object" ? next.mcpServers : {};
   next.mcpServers = { ...servers, [NAME]: { url, headers: { ...headers } } };
   return next;
+}
+
+/// Drops mcpServers.pushcloud, leaving everything else.
+export function removeCursorMcp(json) {
+  const next = structuredClone(json ?? {});
+  if (next.mcpServers && typeof next.mcpServers === "object") delete next.mcpServers[NAME];
+  return next;
+}
+
+/// Writes a file that carries the MCP key: 0600 when new, and an existing file
+/// is tightened to at most 0600 (one already stricter keeps its mode).
+function writeSecretFile(path, text) {
+  mkdirSync(dirname(path), { recursive: true });
+  const was = existsSync(path) ? statSync(path).mode & 0o777 : null;
+  // Never wider than 0600, even for the instant of the write.
+  if (was !== null) chmodSync(path, (was & 0o600) | 0o200);
+  writeFileSync(path, text, { mode: 0o600 });
+  if (was !== null) chmodSync(path, was & 0o600);
+}
+
+/// Every subprocess an agent's CLI gets: a hung `claude` or `codex` must not
+/// hang the pairing or the uninstall.
+export const EXEC_TIMEOUT_MS = 10_000;
+
+const isOk = (r) => r && !r.error && r.status === 0;
+
+/// Undoes what `configureAgent` registered, for every agent: the CLI entries
+/// where a CLI is on PATH, and our entry in Codex's config.toml and Cursor's
+/// mcp.json. Best effort: one failure never stops the rest.
+export function removeAgentMcp({ home = homedir(), env = process.env, say = () => {}, run = spawnSync } = {}) {
+  const exec = (cmd, args) =>
+    run(cmd, args, { encoding: "utf8", env: { ...env, HOME: home }, stdio: "pipe", timeout: EXEC_TIMEOUT_MS });
+  if (onPath("claude", env)) exec("claude", ["mcp", "remove", NAME, "--scope", "user"]);
+  if (onPath("codex", env)) exec("codex", ["mcp", "remove", NAME]);
+
+  const tomlPath = join(home, ".codex", "config.toml");
+  try {
+    if (existsSync(tomlPath)) {
+      const before = readFileSync(tomlPath, "utf8");
+      const after = removeCodexToml(before);
+      if (after !== before) {
+        writeSecretFile(tomlPath, after);
+        say(`Removed the PushCloud MCP server from ${tomlPath}`);
+      }
+    }
+  } catch (err) {
+    say(`Could not clean ${tomlPath}: ${err.message}`);
+  }
+
+  const mcpPath = join(home, ".cursor", "mcp.json");
+  try {
+    const mcp = readSettings(mcpPath);
+    if (mcp.mcpServers && typeof mcp.mcpServers === "object" && NAME in mcp.mcpServers) {
+      writeSecretFile(mcpPath, JSON.stringify(removeCursorMcp(mcp), null, 2) + "\n");
+      say(`Removed the PushCloud MCP server from ${mcpPath}`);
+    }
+  } catch (err) {
+    say(`Could not clean ${mcpPath}: ${err.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +183,7 @@ function prepareHooks(agentId, { home, path, matcher, waitSeconds }) {
   };
 }
 
-const ok = (r) => r && !r.error && r.status === 0;
+const ok = isOk;
 
 function claudeCode({ url, authorization }, ctx) {
   const hooks = prepareHooks("claude", { ...ctx, path: ctx.claudeSettings ? resolve(ctx.claudeSettings) : undefined });
@@ -154,7 +227,7 @@ function codex({ url, authorization }, ctx) {
   }
   if (!added) {
     mkdirSync(dirname(tomlPath), { recursive: true });
-    writeFileSync(tomlPath, upsertCodexToml(toml, { url, authorization }));
+    writeSecretFile(tomlPath, upsertCodexToml(toml, { url, authorization }));
     ctx.say(`Codex: PushCloud MCP server written to ${tomlPath}`);
   }
   hooks.write(ctx.say);
@@ -164,7 +237,10 @@ function cursor({ url, headers }, ctx) {
   const mcpPath = join(ctx.home, ".cursor", "mcp.json");
   const mcp = readSettings(mcpPath);
   const hooks = prepareHooks("cursor", ctx);
-  writeSettings(mcpPath, mergeCursorMcp(mcp, { url, headers }));
+  const next = mergeCursorMcp(mcp, { url, headers });
+  // The same backup-once rule as every settings file, then the key-bearing copy.
+  if (existsSync(mcpPath) && !existsSync(`${mcpPath}.pushcloud-backup`)) copyFileSync(mcpPath, `${mcpPath}.pushcloud-backup`);
+  writeSecretFile(mcpPath, JSON.stringify(next, null, 2) + "\n");
   ctx.say(`Cursor: PushCloud MCP server written to ${mcpPath}`);
   hooks.write(ctx.say);
 }
@@ -203,7 +279,7 @@ export async function configureAgent(
   const authorization = headers.Authorization;
   if (!url || !authorization) throw new Error("the server connected but sent no MCP URL or key.");
 
-  const exec = (cmd, args) => run(cmd, args, { encoding: "utf8", env: { ...env, HOME: home }, stdio: "pipe" });
+  const exec = (cmd, args) => run(cmd, args, { encoding: "utf8", env: { ...env, HOME: home }, stdio: "pipe", timeout: EXEC_TIMEOUT_MS });
   const ctx = {
     home,
     claudeSettings,

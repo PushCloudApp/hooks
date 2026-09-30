@@ -257,6 +257,26 @@ describe("pushcloud setup", () => {
     assert.equal(readFileSync(argvFile, "utf8").trim(), "mcp remove pushcloud --scope user");
   });
 
+  test("remove also strips the pushcloud entry from Codex and Cursor configs", async () => {
+    const w = workspace();
+    const home = tempHome();
+    mkdirSync(join(home, ".codex"));
+    mkdirSync(join(home, ".cursor"));
+    writeFileSync(
+      join(home, ".codex", "config.toml"),
+      'model = "o3"\n\n[mcp_servers.pushcloud]\nurl = "u"\nhttp_headers = { Authorization = "Bearer pcm_x" }\n'
+    );
+    writeFileSync(
+      join(home, ".cursor", "mcp.json"),
+      JSON.stringify({ mcpServers: { pushcloud: { url: "u" }, keep: { url: "k" } } })
+    );
+    const { code } = await run(["remove", "--claude-settings", w.settings], { HOME: home });
+    assert.equal(code, 0);
+    assert.doesNotMatch(readFileSync(join(home, ".codex", "config.toml"), "utf8"), /pushcloud|pcm_/);
+    assert.match(readFileSync(join(home, ".codex", "config.toml"), "utf8"), /model = "o3"/);
+    assert.deepEqual(JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).mcpServers, { keep: { url: "k" } });
+  });
+
   test("without a terminal it says so rather than hanging", async () => {
     const w = workspace();
     const { code, err } = await run(["setup", "--config", w.config, "--claude-settings", w.settings]);

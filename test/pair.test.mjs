@@ -166,6 +166,16 @@ describe("pushcloud pair", () => {
     ]);
   });
 
+  test("the test question failing after setup is written: noted, exit 0", async () => {
+    const box = sandbox();
+    script.messages = () => err(500, "BOOM");
+    const { code, all } = await run(["pair", "482913", "--machine", "test-box"], box);
+    assert.equal(code, 0, all);
+    assert.ok(existsSync(join(pushcloudDir(box), "config.json")));
+    assert.match(all, /setup is written/i);
+    assert.match(all, /Done\./);
+  });
+
   test("no claude on PATH: the add command is printed and nothing is run", async () => {
     const box = sandbox();
     rmSync(join(box.bin, "claude"));

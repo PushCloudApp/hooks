@@ -30,6 +30,7 @@ export const MAX_CACHED = 200;
 export const REQUEST_TIMEOUT_MS = 3000;
 
 const MAX_TITLE = 200;
+const MAX_PROJECT = 80;
 
 /// Cached in place of a session id once the person has dismissed that session
 /// on the phone (a 409 whose session reads `failed_reason: "dismissed"`): the
@@ -120,7 +121,7 @@ const cacheFile = (cfg) => cfg.sessionsPath ?? sessionsPath();
 export async function onSessionStart(cfg, hookInput) {
   if (!usable(cfg, hookInput)) return null;
   const externalId = externalIdOf(hookInput);
-  const project = projectOf(hookInput);
+  const project = projectOf(hookInput)?.slice(0, MAX_PROJECT) || null;
   const { session } = await call(cfg, "POST", "/v1/sessions", {
     title: titleFor(hookInput),
     agent: "claude-code",
@@ -165,7 +166,8 @@ async function setStatus(cfg, hookInput, status, { openIfMissing = true } = {}) 
       await call(cfg, "PATCH", `/v1/sessions/${encodeURIComponent(id)}`, { status });
       break;
     } catch (err) {
-      if (err.status !== 409) throw err;
+      // Only SESSION_ENDED means the session is over; any other 409 is not ours to read.
+      if (err.status !== 409 || err.code !== "SESSION_ENDED") throw err;
       if (status === "done") {
         forget(path, externalId);
         return false;

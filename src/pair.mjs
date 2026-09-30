@@ -209,13 +209,24 @@ export async function runPair(args, { home = homedir(), say = () => {}, signal }
     const cfg = { api, token, key: null, machine, e2eeKey: existing.e2eeKey };
     say();
     say("Sending a test question to your phone. Tap Approve on it.");
-    const id = await askQuestion(cfg, {
-      title: `${machine} · setup`,
-      message: "This is PushCloud asking. Tap Approve to finish setting up.",
-    });
-    const answer = await waitForAnswer(cfg, id, 120);
+    // Setup is complete by now, so a failure here is a note, not an error.
+    let answer = null;
+    let problem = null;
+    try {
+      const id = await askQuestion(cfg, {
+        title: `${machine} · setup`,
+        message: "This is PushCloud asking. Tap Approve to finish setting up.",
+      });
+      answer = await waitForAnswer(cfg, id, 120);
+    } catch (err) {
+      problem = err.message;
+    }
     if (!answer) {
-      say("No answer came back within two minutes. The setup is written; check the PushCloud app is signed in on your phone.");
+      say(
+        problem
+          ? `The test question failed (${problem}). The setup is written; run \`pushcloud test\` once the PushCloud app is signed in on your phone.`
+          : "No answer came back within two minutes. The setup is written; check the PushCloud app is signed in on your phone."
+      );
     }
   }
 

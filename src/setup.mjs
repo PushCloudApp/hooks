@@ -21,7 +21,8 @@ import { loadConfig, saveConfig, DEFAULT_CONFIG_PATH } from "./config.mjs";
 import { AGENTS, agentById } from "./agents.mjs";
 import { api, askQuestion, waitForAnswer } from "./api.mjs";
 import { parseKey } from "./seal.mjs";
-import { binDir, installBin, hookCommand, onPath } from "./install.mjs";
+import { binDir, installBin, hookCommand } from "./install.mjs";
+import { removeAgentMcp } from "./mcp-config.mjs";
 import { readSettings, writeSettings, installSkill, skillPath } from "./settings.mjs";
 import { runPair } from "./pair.mjs";
 
@@ -269,9 +270,7 @@ async function runRemove(args) {
   }
   // The MCP server a pairing registered. Best effort: it may never have been
   // added, and a failure here must not leave the rest of the uninstall undone.
-  if (onPath("claude")) {
-    spawnSync("claude", ["mcp", "remove", "pushcloud", "--scope", "user"], { stdio: "ignore" });
-  }
+  removeAgentMcp({ say });
   say(dim(`Credentials are left at ${DEFAULT_CONFIG_PATH}; delete that file to finish.`));
 }
 
