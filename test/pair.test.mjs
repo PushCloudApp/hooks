@@ -2,7 +2,7 @@ import { test, describe, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, mkdirSync, chmodSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, mkdirSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir, hostname } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -83,10 +83,17 @@ function sandbox() {
   const home = mkdtempSync(join(tmpdir(), "pushcloud-pair-home-"));
   const bin = mkdtempSync(join(tmpdir(), "pushcloud-pair-bin-"));
   const argv = join(bin, "argv.txt");
-  writeFileSync(join(bin, "claude"), `#!/bin/sh\necho "$@" >> "${argv}"\nexit 0\n`);
+  // One JSON array per call, so the argv boundaries survive.
+  writeFileSync(
+    join(bin, "claude"),
+    `#!${process.execPath}\nrequire("fs").appendFileSync(${JSON.stringify(argv)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n`
+  );
   chmodSync(join(bin, "claude"), 0o755);
   return { home, bin, argv };
 }
+
+const argvCalls = (box) =>
+  existsSync(box.argv) ? readFileSync(box.argv, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
 
 function run(args, box) {
   return new Promise((resolve) => {
@@ -150,6 +157,38 @@ describe("pushcloud pair", () => {
     const settings = JSON.parse(readFileSync(join(box.home, ".claude", "settings.json"), "utf8"));
     assert.ok(settings.hooks.PreToolUse[0].hooks[0].command.startsWith(`node "${hook}"`));
     assert.ok(existsSync(join(box.home, ".claude", "skills", "pushcloud", "SKILL.md")));
+
+    // The MCP server registered through the stub `claude`: remove, then add.
+    const mcp = CONNECTED(api.origin).mcp;
+    assert.deepEqual(argvCalls(box), [
+      ["mcp", "remove", "pushcloud", "--scope", "user"],
+      ["mcp", "add", "--transport", "http", "--scope", "user", "pushcloud", mcp.url, "--header", `Authorization: ${mcp.headers.Authorization}`],
+    ]);
+  });
+
+  test("no claude on PATH: the add command is printed and nothing is run", async () => {
+    const box = sandbox();
+    rmSync(join(box.bin, "claude"));
+    const { code, out, all } = await run(["pair", "482913", "--no-test"], box);
+    assert.equal(code, 0, all);
+    const mcp = CONNECTED(api.origin).mcp;
+    assert.ok(
+      out.includes(`claude mcp add --transport http --scope user pushcloud ${mcp.url} --header "Authorization: ${mcp.headers.Authorization}"`),
+      out
+    );
+    assert.deepEqual(argvCalls(box), []);
+  });
+
+  test("a Cursor pairing writes ~/.cursor/mcp.json and hooks.json, and no Claude settings", async () => {
+    const box = sandbox();
+    script.wait = () => json(200, { ...CONNECTED(api.origin), agent: "cursor" });
+    const { code, all } = await run(["pair", "482913", "--no-test"], box);
+    assert.equal(code, 0, all);
+    const mcp = JSON.parse(readFileSync(join(box.home, ".cursor", "mcp.json"), "utf8"));
+    assert.deepEqual(mcp.mcpServers.pushcloud, CONNECTED(api.origin).mcp);
+    assert.ok(existsSync(join(box.home, ".cursor", "hooks.json")));
+    assert.equal(existsSync(join(box.home, ".claude")), false);
+    assert.deepEqual(argvCalls(box), []);
   });
 
   test("names the agent in the confirm line when the claim does", async () => {

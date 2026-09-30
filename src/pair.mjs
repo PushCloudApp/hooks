@@ -19,10 +19,10 @@ import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { resolve } from "node:path";
 import { loadConfig, saveConfig, DEFAULT_CONFIG_PATH } from "./config.mjs";
-import { agentById } from "./agents.mjs";
 import { askQuestion, waitForAnswer } from "./api.mjs";
-import { installBin, hookCommand } from "./install.mjs";
-import { readSettings, writeSettings, installSkill } from "./settings.mjs";
+import { installBin } from "./install.mjs";
+import { installSkill } from "./settings.mjs";
+import { configureAgent } from "./mcp-config.mjs";
 
 const PKG = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -145,39 +145,6 @@ export async function waitConnected(api, secret, { interval = 2, onTick, signal,
   }
 }
 
-/// Writes the agent's hooks and prints how to add the MCP server.
-///
-/// Task H3 replaces this with `configureAgent` (the MCP registration itself, per
-/// agent). Until then the hooks are written the same way `setup` writes them,
-/// and the MCP command is printed for the user to run.
-function configureHooks(slug, payload, { home, args, say, waitSeconds }) {
-  const agent = agentById(AGENT_ID[slug] ?? "");
-  const url = payload.mcp?.url;
-  const authorization = payload.mcp?.headers?.Authorization;
-  if (agent) {
-    const path =
-      agent.id === "claude" && args["claude-settings"] ? resolve(args["claude-settings"]) : agent.config(home);
-    const written = agent.install(readSettings(path), {
-      command: hookCommand(home),
-      matcher: args.matcher ?? agent.defaultMatcher,
-      waitSeconds,
-    });
-    writeSettings(path, written);
-    say(`${agent.name}: hooks written to ${path}`);
-  }
-  if (url && authorization) {
-    say();
-    if (slug === "claude-code") {
-      say("Add the PushCloud tools to Claude Code with:");
-      say(`  claude mcp add --transport http --scope user pushcloud ${url} --header "Authorization: ${authorization}"`);
-    } else {
-      say("Add PushCloud to your agent as an MCP server:");
-      say(`  URL     ${url}`);
-      say(`  Header  Authorization: ${authorization}`);
-    }
-  }
-}
-
 /// The whole flow, spec §4.1 steps 1-8. Returns the process exit code.
 export async function runPair(args, { home = homedir(), say = () => {}, signal } = {}) {
   const code = args._.slice(1).join("").replace(/[\s-]/g, "");
@@ -205,7 +172,9 @@ export async function runPair(args, { home = homedir(), say = () => {}, signal }
   }
 
   // Connected. From here on, and only from here on, the disk is touched.
-  const slug = payload.agent ?? "claude-code";
+  // An agent this version does not know yet gets the Other treatment: the URL
+  // and header printed, nothing written.
+  const slug = payload.agent == null ? "claude-code" : Object.hasOwn(AGENT_ID, payload.agent) ? payload.agent : "other";
   const token = payload.application?.token;
   if (!token) throw new Error("the server connected but sent no application token.");
 
@@ -222,7 +191,14 @@ export async function runPair(args, { home = homedir(), say = () => {}, signal }
   );
   say(`Saved to ${configPath}`);
 
-  configureHooks(slug, payload, { home, args, say, waitSeconds: existing.waitSeconds });
+  say();
+  await configureAgent(slug, payload, {
+    home,
+    claudeSettings: args["claude-settings"],
+    matcher: args.matcher,
+    waitSeconds: existing.waitSeconds,
+    say,
+  });
 
   if (slug === "claude-code") {
     const installed = installSkill(args["skills-dir"], home);

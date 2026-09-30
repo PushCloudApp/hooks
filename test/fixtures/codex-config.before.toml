@@ -1,0 +1,21 @@
+# Key names captured from codex-cli 0.159.1 (`codex --version`, `codex mcp add --help`,
+# `codex mcp get pushcloud --json` on this file's output) and the config reference at
+# https://developers.openai.com/codex/config-reference (`[mcp_servers.<name>]`:
+# `url` for a streamable HTTP server, `http_headers` for static request headers).
+model = "gpt-5-codex"
+approval_policy = "on-request"
+
+[mcp_servers.other]
+command = "npx"
+args = ["-y", "other-mcp"]
+
+[mcp_servers.pushcloud]
+url = "https://old.example/mcp"
+startup_timeout_sec = 20
+
+[mcp_servers.pushcloud.http_headers]
+Authorization = "Bearer pcm_old"
+
+# the user's profile, after ours
+[profiles.work]
+model = "o3"
