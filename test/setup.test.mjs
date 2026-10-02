@@ -371,8 +371,12 @@ describe("the skill", () => {
   test("a skills directory that cannot be written does not fail the setup", async () => {
     // The hooks are the part that has to work. A skill that could not be copied
     // is a worse outcome than no skill, only if it takes the install down with it.
+    // Under a plain file, so mkdir fails with ENOTDIR on every OS. `/proc/...` failed
+    // fast on macOS but sent Node's recursive mkdir into an endless loop on Linux CI.
     const w = workspace();
-    const { code } = await run(good(w, ["--no-test", "--skills-dir", "/proc/nope/nowhere"]));
+    const blocker = join(mkdtempSync(join(tmpdir(), "pushcloud-skills-")), "a-file");
+    writeFileSync(blocker, "");
+    const { code } = await run(good(w, ["--no-test", "--skills-dir", join(blocker, "skills")]));
     assert.equal(code, 0);
     assert.ok(existsSync(w.settings));
   });
