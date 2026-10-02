@@ -1,0 +1,28 @@
+# Publishes to npm when a version tag is pushed (git tag v0.2.0 && git push origin v0.2.0).
+#
+# Trusted publishing (OIDC): npm trusts this workflow file in PushCloudApp/hooks, so there is
+# no token anywhere and no 2FA prompt. npm deprecates 2FA-bypass tokens for publishing around
+# January 2027, which is why this exists instead of an NPM_TOKEN secret.
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # the OIDC token npm exchanges for a one-off publish credential
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # npm 11.5+ is required for trusted publishing
+          registry-url: https://registry.npmjs.org
+      - name: Tag matches package.json
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm test
+      - run: npm publish
